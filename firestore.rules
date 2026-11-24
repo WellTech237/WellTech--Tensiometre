@@ -1,0 +1,172 @@
+rules_version = '2';
+// Règles de sécurité WellTech (à coller dans Firebase › Firestore › Règles)
+//
+// Trois rôles :
+//  - la patiente : lit et écrit SON dossier (users/{son uid}) ;
+//  - le médecin : s'inscrit lui-même (medecins/{uid}, statut « en_attente »)
+//    et n'a AUCUN accès tant que l'administrateur n'a pas mis « valide ».
+//    Il ne voit QUE les patientes qui l'ont choisi avec son code ;
+//  - l'administrateur : uid dans « admins » (créé à la main dans la console).
+//    Il vérifie et valide les médecins ; il ne voit aucune donnée de santé.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function connecte() {
+      return request.auth != null;
+    }
+    function estMoi(uid) {
+      return connecte() && request.auth.uid == uid;
+    }
+    function estAdmin() {
+      return connecte() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+    function medecinActif(mid) {
+      return exists(/databases/$(database)/documents/medecins/$(mid))
+        && get(/databases/$(database)/documents/medecins/$(mid)).data.get('statut', '') == 'valide';
+    }
+    // Médecin VALIDÉ par l'administrateur.
+    function estMedecin() {
+      return connecte() && medecinActif(request.auth.uid);
+    }
+    // Le médecin connecté est-il celui que la patiente a choisi ?
+    function estSonMedecin(uid) {
+      return estMedecin()
+        && get(/databases/$(database)/documents/users/$(uid)).data.get('medecin_uid', '') == request.auth.uid;
+    }
+    // La patiente ne peut se lier qu'à un médecin validé (ou à personne).
+    function medecinValide(d) {
+      return d.get('medecin_uid', '') == '' || medecinActif(d.medecin_uid);
+    }
+    function modifies() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    // Administrateurs : créés à la main dans la console, jamais par l'appli.
+    match /admins/{aid} {
+      allow read: if estMoi(aid);
+      allow write: if false;
+    }
+
+    // Comptes médecins.
+    match /medecins/{mid} {
+      allow get: if estMoi(mid) || estAdmin();
+      allow list: if estAdmin();
+      // Inscription : toujours « en_attente », champs contrôlés,
+      // courriel = celui du compte connecté.
+      allow create: if estMoi(mid)
+                    && request.resource.data.keys().hasOnly(['nom', 'email', 'telephone', 'numero_ordre', 'statut', 'demande_le'])
+                    && request.resource.data.statut == 'en_attente'
+                    && request.resource.data.nom is string
+                    && request.resource.data.nom.size() >= 3 && request.resource.data.nom.size() <= 100
+                    && request.resource.data.email == request.auth.token.email
+                    && request.resource.data.telephone is string
+                    && request.resource.data.telephone.size() >= 7 && request.resource.data.telephone.size() <= 30
+                    && request.resource.data.numero_ordre is string
+                    && request.resource.data.numero_ordre.size() >= 2 && request.resource.data.numero_ordre.size() <= 30;
+      allow update: if
+          // le médecin validé enregistre son code
+          (estMoi(mid) && resource.data.get('statut', '') == 'valide'
+            && modifies().hasOnly(['code']))
+          // demande en attente ou refusée : il corrige et renvoie (jamais « valide »)
+          || (estMoi(mid) && resource.data.get('statut', '') in ['en_attente', 'refuse']
+            && modifies().hasOnly(['nom', 'telephone', 'numero_ordre', 'statut', 'motif', 'demande_le'])
+            && request.resource.data.statut == 'en_attente')
+          // l'administrateur décide
+          || (estAdmin()
+            && modifies().hasOnly(['statut', 'motif', 'decision_le', 'decision_par'])
+            && request.resource.data.statut in ['valide', 'refuse', 'en_attente']);
+      allow delete: if false;
+    }
+
+    // Code à donner aux patientes (ex. MBG-4821) -> uid, nom et courriel
+    // professionnel du médecin (pour l'alerte de crise envoyée par l'app).
+    // On peut lire UN code qu'on connaît, jamais la liste des codes.
+    match /codes_medecin/{code} {
+      allow get: if connecte();
+      allow list: if false;
+      allow create: if estMedecin()
+                    && request.resource.data.uid == request.auth.uid
+                    && request.resource.data.get('email', request.auth.token.email) == request.auth.token.email
+                    && code.size() >= 6;
+      // Le médecin peut seulement (re)mettre son propre courriel sur SON code.
+      allow update: if estMedecin()
+                    && resource.data.uid == request.auth.uid
+                    && modifies().hasOnly(['email'])
+                    && request.resource.data.email == request.auth.token.email;
+      allow delete: if false;
+    }
+
+    // Dossier de la patiente.
+    // « plan » (médicament, dose, heure) : écrit seulement par SON médecin.
+    match /users/{uid} {
+      allow get: if estMoi(uid)
+                 || (estMedecin() && resource.data.get('medecin_uid', '') == request.auth.uid);
+      allow list: if estMedecin() && resource.data.medecin_uid == request.auth.uid;
+      allow create: if estMoi(uid)
+                    && !('plan' in request.resource.data)
+                    && medecinValide(request.resource.data);
+      allow update: if (estMoi(uid)
+                        && !modifies().hasAny(['plan', 'plan_maj'])
+                        && (!modifies().hasAny(['medecin_uid']) || medecinValide(request.resource.data)))
+                    || (estMedecin()
+                        && resource.data.get('medecin_uid', '') == request.auth.uid
+                        && modifies().hasOnly(['plan', 'plan_maj']));
+      allow delete: if estMoi(uid);
+
+      // Mesures : jamais modifiées ni effacées (traçabilité médicale).
+      // Seuls le renvoi identique et le marquage « annulee » sont acceptés :
+      // impossible de changer après coup le niveau d'alerte, le grade, les
+      // symptômes ou les valeurs, et une mesure annulée le reste.
+      match /mesures/{mesureId} {
+        allow read: if estMoi(uid) || estSonMedecin(uid);
+        allow create: if estMoi(uid) && request.resource.data.id == mesureId;
+        allow update: if estMoi(uid)
+                      && modifies().hasOnly(['annulee', 'annulee_ms', 'pp', 'pm'])
+                      && (resource.data.get('annulee', false) == false
+                          || request.resource.data.get('annulee', false) == true);
+        allow delete: if false;
+      }
+
+      // Prises de médicament : un document par jour (AAAA-MM-JJ).
+      match /prises/{jour} {
+        allow read: if estMoi(uid) || estSonMedecin(uid);
+        allow create, update: if estMoi(uid)
+                              && request.resource.data.jour == jour
+                              && request.resource.data.statut in ['pris', 'oubli', 'annule'];
+        allow delete: if false;
+      }
+
+      // Messages : chacun n'écrit que les siens (de_moi : true = patiente,
+      // false = médecin). Personne ne les efface. Le médecin peut seulement
+      // marquer un message de la patiente comme lu.
+      match /messages/{messageId} {
+        allow read: if estMoi(uid) || estSonMedecin(uid);
+        allow create: if request.resource.data.id == messageId
+                      && request.resource.data.texte is string
+                      && request.resource.data.texte.size() <= 2000
+                      && ((estMoi(uid) && request.resource.data.de_moi == true)
+                          || (estSonMedecin(uid) && request.resource.data.de_moi == false));
+        allow update: if (estMoi(uid)
+                          && request.resource.data.texte == resource.data.texte
+                          && request.resource.data.de_moi == resource.data.de_moi)
+                      || (estSonMedecin(uid) && modifies().hasOnly(['lu']));
+        allow delete: if false;
+      }
+
+      // Historique des plans de traitement : écrit par le médecin, jamais
+      // modifié (qui a changé quoi, quand).
+      match /plans/{planId} {
+        allow read: if estMoi(uid) || estSonMedecin(uid);
+        allow create: if estSonMedecin(uid) && request.resource.data.medecin_uid == request.auth.uid;
+        allow update, delete: if false;
+      }
+
+      // Notes du médecin sur une mesure (identifiant = celui de la mesure).
+      match /notes/{mesureId} {
+        allow read: if estMoi(uid) || estSonMedecin(uid);
+        allow create, update: if estSonMedecin(uid) && request.resource.data.medecin_uid == request.auth.uid;
+        allow delete: if false;
+      }
+    }
+  }
+}

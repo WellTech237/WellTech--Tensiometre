@@ -1,0 +1,140 @@
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/material.dart';
+import 'package:uuid/uuid.dart';
+
+import '../core/classification.dart';
+import '../core/risque.dart';
+import '../data/database.dart';
+import '../data/models.dart';
+import 'cloud.dart';
+import 'notifications.dart';
+
+/// État partagé de l'application (profil, dernière mesure, réseau).
+class AppState extends ChangeNotifier {
+  AppState._();
+  static final instance = AppState._();
+
+  final _uuid = const Uuid();
+  final db = BaseLocale.instance;
+
+  Profil profil = Profil();
+  Mesure? derniere;
+  bool enLigne = false;
+  TimeOfDay heureMatin = const TimeOfDay(hour: 7, minute: 30);
+  TimeOfDay heureSoir = const TimeOfDay(hour: 18, minute: 0);
+  int alertesNonLues = 0;
+
+  Risque get risque => calculerRisque(profil);
+
+  Future<void> charger() async {
+    profil = await db.lireProfil() ?? Profil();
+    derniere = await db.derniereMesure();
+    final h = await db.lireReglage('heures');
+    if (h != null) {
+      final parts = h.split(',');
+      heureMatin = _lireHeure(parts[0]);
+      heureSoir = _lireHeure(parts[1]);
+    }
+    alertesNonLues = (await db.alertes()).where((a) => !a.lue).length;
+    final c = Connectivity();
+    enLigne = !(await c.checkConnectivity()).contains(ConnectivityResult.none);
+    c.onConnectivityChanged.listen((r) {
+      final avant = enLigne;
+      enLigne = !r.contains(ConnectivityResult.none);
+      notifyListeners();
+      // Retour du réseau : on envoie tout ce qui attend (boîte d'envoi).
+      if (enLigne && !avant) synchroniser();
+    });
+    notifyListeners();
+    if (enLigne) synchroniser();
+  }
+
+  String dernierMessageSynchro = '';
+
+  /// Envoie le profil et les mesures en attente vers Firebase (si configuré,
+  /// si le patient l'a accepté et si Internet est disponible).
+  Future<String> synchroniser() async {
+    final m = await Cloud.instance.synchroniser(enLigne: enLigne, profil: profil.prenom.isEmpty ? null : profil);
+    dernierMessageSynchro = m;
+    notifyListeners();
+    return m;
+  }
+
+  static TimeOfDay _lireHeure(String s) {
+    final hm = s.split(':');
+    return TimeOfDay(hour: int.parse(hm[0]), minute: int.parse(hm[1]));
+  }
+
+  static String formatHeure(TimeOfDay t) => '${t.hour} h ${t.minute.toString().padLeft(2, '0')}';
+
+  Future<void> enregistrerProfil(Profil p, {bool synchroniser = true}) async {
+    profil = p;
+    await db.ecrireProfil(p);
+    notifyListeners();
+    if (synchroniser) this.synchroniser();
+  }
+
+  Future<void> changerHeures(TimeOfDay matin, TimeOfDay soir) async {
+    heureMatin = matin;
+    heureSoir = soir;
+    await db.ecrireReglage('heures', '${matin.hour}:${matin.minute},${soir.hour}:${soir.minute}');
+    await Notifications.instance.programmerMesures(matin, soir);
+    notifyListeners();
+  }
+
+  /// Prochaine mesure prévue (matin ou soir).
+  DateTime prochaineMesure() {
+    final now = DateTime.now();
+    final m = DateTime(now.year, now.month, now.day, heureMatin.hour, heureMatin.minute);
+    final s = DateTime(now.year, now.month, now.day, heureSoir.hour, heureSoir.minute);
+    if (now.isBefore(m)) return m;
+    if (now.isBefore(s)) return s;
+    return m.add(const Duration(days: 1));
+  }
+
+  /// Enregistre une séance de mesure + l'alerte associée. Renvoie la décision.
+  Future<(Mesure, DecisionAlerte)> enregistrerMesure({
+    required int tas,
+    required int tad,
+    required int pouls,
+    required int nbLectures,
+    required List<String> symptomesCoches,
+    required List<String> symptomesAutres,
+    String? episodeId,
+  }) async {
+    final grade = classerPour(tas, tad, enceinte: profil.grossesseActive);
+    final decision = deciderAlerte(grade: grade, symptomesCoches: symptomesCoches, symptomesAutres: symptomesAutres, risque: risque);
+    final m = Mesure(
+      id: _uuid.v4(),
+      date: DateTime.now(),
+      tas: tas,
+      tad: tad,
+      pouls: pouls,
+      nbLectures: nbLectures,
+      grade: grade.name,
+      symptomes: [...symptomesCoches, ...symptomesAutres],
+      niveauAlerte: decision.niveau,
+      episodeId: episodeId,
+    );
+    await db.ajouterMesure(m);
+    if (episodeId == null) derniere = m;
+    if (decision.niveau >= 2) {
+      await db.ajouterAlerte(AlerteEnregistree(
+        id: _uuid.v4(),
+        date: m.date,
+        niveau: decision.niveau,
+        titre: decision.titre,
+        detail: '$tas/$tad (${grade.court})${m.symptomes.isEmpty ? '' : ' · ${m.symptomes.join(', ')}'}',
+      ));
+      alertesNonLues++;
+      if (decision.niveau >= 3) {
+        await Notifications.instance.alerter(decision.niveau, decision.titre, '$tas/$tad · ${decision.conseil}');
+      }
+    }
+    notifyListeners();
+    synchroniser(); // sans attendre : l'affichage ne dépend pas du réseau
+    return (m, decision);
+  }
+
+  String nouvelEpisode() => _uuid.v4();
+}

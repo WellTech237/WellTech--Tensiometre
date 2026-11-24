@@ -1,0 +1,132 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite_sqlcipher/sqflite.dart';
+
+import 'models.dart';
+
+/// Base SQLite chiffrée (SQLCipher). La clé est créée au premier lancement et
+/// gardée dans le coffre-fort du téléphone (Keystore Android).
+class BaseLocale {
+  BaseLocale._();
+  static final instance = BaseLocale._();
+
+  static const _coffre = FlutterSecureStorage(aOptions: AndroidOptions(encryptedSharedPreferences: true));
+  Database? _db;
+
+  Database get db {
+    final d = _db;
+    if (d == null) throw StateError('Base non ouverte');
+    return d;
+  }
+
+  Future<void> ouvrir() async {
+    var cle = await _coffre.read(key: 'db_key');
+    if (cle == null) {
+      final r = Random.secure();
+      cle = base64UrlEncode(List<int>.generate(32, (_) => r.nextInt(256)));
+      await _coffre.write(key: 'db_key', value: cle);
+    }
+    final chemin = p.join(await getDatabasesPath(), 'welltech.db');
+    _db = await openDatabase(
+      chemin,
+      password: cle,
+      version: 1,
+      onCreate: (db, version) async {
+        await db.execute('''
+          CREATE TABLE mesures (
+            id TEXT PRIMARY KEY,
+            date_ms INTEGER NOT NULL,
+            tas INTEGER NOT NULL,
+            tad INTEGER NOT NULL,
+            pouls INTEGER NOT NULL,
+            nb_lectures INTEGER NOT NULL,
+            grade TEXT NOT NULL,
+            symptomes TEXT NOT NULL,
+            niveau_alerte INTEGER NOT NULL,
+            episode_id TEXT,
+            sync_status TEXT NOT NULL
+          )''');
+        await db.execute('CREATE INDEX idx_mesures_date ON mesures(date_ms)');
+        await db.execute('''
+          CREATE TABLE alertes (
+            id TEXT PRIMARY KEY,
+            date_ms INTEGER NOT NULL,
+            niveau INTEGER NOT NULL,
+            titre TEXT NOT NULL,
+            detail TEXT NOT NULL,
+            lue INTEGER NOT NULL
+          )''');
+        await db.execute('CREATE TABLE reglages (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL)');
+      },
+    );
+  }
+
+  // --- Réglages / profil ---------------------------------------------------
+  Future<String?> lireReglage(String cle) async {
+    final r = await db.query('reglages', where: 'cle = ?', whereArgs: [cle], limit: 1);
+    return r.isEmpty ? null : r.first['valeur'] as String;
+  }
+
+  Future<void> ecrireReglage(String cle, String valeur) =>
+      db.insert('reglages', {'cle': cle, 'valeur': valeur}, conflictAlgorithm: ConflictAlgorithm.replace);
+
+  Future<Profil?> lireProfil() async {
+    final s = await lireReglage('profil');
+    return s == null ? null : Profil.decoder(s);
+  }
+
+  Future<void> ecrireProfil(Profil profil) => ecrireReglage('profil', profil.encoder());
+
+  // --- Mesures ---------------------------------------------------------------
+  /// insert « ignore » : réinsérer le même UUID ne crée jamais de doublon.
+  Future<void> ajouterMesure(Mesure m) => db.insert('mesures', m.toRow(), conflictAlgorithm: ConflictAlgorithm.ignore);
+
+  Future<List<Mesure>> mesuresDepuis(DateTime debut) async {
+    final r = await db.query('mesures', where: 'date_ms >= ?', whereArgs: [debut.millisecondsSinceEpoch], orderBy: 'date_ms ASC');
+    return r.map(Mesure.fromRow).toList();
+  }
+
+  Future<Mesure?> derniereMesure() async {
+    final r = await db.query('mesures', where: 'episode_id IS NULL', orderBy: 'date_ms DESC', limit: 1);
+    return r.isEmpty ? null : Mesure.fromRow(r.first);
+  }
+
+  // --- Synchronisation (étape 2) ------------------------------------------------
+  Future<List<Mesure>> mesuresEnAttente() async {
+    final r = await db.query('mesures', where: 'sync_status = ?', whereArgs: ['pending'], orderBy: 'date_ms ASC');
+    return r.map(Mesure.fromRow).toList();
+  }
+
+  Future<void> marquerSynchro(List<String> ids) async {
+    if (ids.isEmpty) return;
+    final b = db.batch();
+    for (final id in ids) {
+      b.update('mesures', {'sync_status': 'synced'}, where: 'id = ?', whereArgs: [id]);
+    }
+    await b.commit(noResult: true);
+  }
+
+  /// Mesure venant du cloud (nouveau téléphone) : déjà synchronisée.
+  Future<void> importerMesure(Mesure m) async {
+    final row = m.toRow()..['sync_status'] = 'synced';
+    await db.insert('mesures', row, conflictAlgorithm: ConflictAlgorithm.ignore);
+  }
+
+  Future<List<Mesure>> mesuresEpisode(String episodeId) async {
+    final r = await db.query('mesures', where: 'episode_id = ?', whereArgs: [episodeId], orderBy: 'date_ms ASC');
+    return r.map(Mesure.fromRow).toList();
+  }
+
+  // --- Alertes ---------------------------------------------------------------
+  Future<void> ajouterAlerte(AlerteEnregistree a) => db.insert('alertes', a.toRow(), conflictAlgorithm: ConflictAlgorithm.ignore);
+
+  Future<List<AlerteEnregistree>> alertes({int limite = 30}) async {
+    final r = await db.query('alertes', orderBy: 'date_ms DESC', limit: limite);
+    return r.map(AlerteEnregistree.fromRow).toList();
+  }
+
+  Future<void> marquerAlertesLues() => db.update('alertes', {'lue': 1});
+}

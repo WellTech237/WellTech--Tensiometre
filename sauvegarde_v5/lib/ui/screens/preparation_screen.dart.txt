@@ -1,0 +1,114 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+
+import '../../core/classification.dart';
+import '../../services/app_state.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'saisie_screen.dart';
+
+/// Écran 7 : bien prendre sa mesure (repos de 5 min + 6 points à vérifier).
+class PreparationScreen extends StatefulWidget {
+  const PreparationScreen({super.key});
+  @override
+  State<PreparationScreen> createState() => _PreparationScreenState();
+}
+
+class _PreparationScreenState extends State<PreparationScreen> {
+  static const _regles = [
+    'Dos appuyé, pieds à plat, jambes non croisées',
+    'Bras posé sur la table, à hauteur du cœur',
+    'Brassard à votre taille, sur la peau nue',
+    'Toujours le même bras',
+    'Pas de café, tabac ni sport depuis 30 min',
+    'Vessie vide, sans parler pendant la mesure',
+  ];
+  final _ok = <int>{};
+  int _reste = 300;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (_reste <= 0) {
+        t.cancel();
+      } else {
+        setState(() => _reste--);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  String _consignes() => 'Avant de mesurer, restez assise au calme cinq minutes. ${_regles.join('. ')}. '
+      'Ensuite, prenez deux mesures à une minute d’écart.';
+
+  @override
+  Widget build(BuildContext context) {
+    final m = AppState.instance.derniere;
+    final mm = (_reste ~/ 60).toString();
+    final ss = (_reste % 60).toString().padLeft(2, '0');
+    return Scaffold(
+      appBar: AppBar(title: const Text('Avant de mesurer', style: TextStyle(fontWeight: FontWeight.w800)), actions: [
+        Padding(padding: const EdgeInsets.only(right: 12), child: BoutonEcouter(texte: _consignes)),
+      ]),
+      body: ListView(padding: const EdgeInsets.fromLTRB(20, 4, 20, 24), children: [
+        Carte(
+          child: Row(children: [
+            SizedBox(
+              width: 104,
+              height: 104,
+              child: Stack(alignment: Alignment.center, children: [
+                SizedBox.expand(child: CircularProgressIndicator(value: 1 - _reste / 300, strokeWidth: 10, color: Wt.violet, backgroundColor: const Color(0xFFEEF0F5))),
+                Column(mainAxisSize: MainAxisSize.min, children: [
+                  Text('$mm:$ss', style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                  const Text('repos', style: TextStyle(fontSize: 11, color: Wt.gris, fontWeight: FontWeight.w700)),
+                ]),
+              ]),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Text(_reste > 0 ? 'Restez assise au calme 5 minutes' : 'Vous pouvez mesurer', style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, height: 1.25)),
+            ),
+          ]),
+        ),
+        if (m != null) ...[
+          const SizedBox(height: 10),
+          Carte(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Text('Précédente : ${formatDate(m.date)}', style: const TextStyle(fontSize: 13, color: Wt.gris, fontWeight: FontWeight.w700)),
+              Text('${m.tas}/${m.tad} · ${Grade.values.byName(m.grade).court}', style: const TextStyle(fontWeight: FontWeight.w800)),
+            ]),
+          ),
+        ],
+        const SizedBox(height: 10),
+        Carte(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: Column(children: [
+            for (var i = 0; i < _regles.length; i++)
+              CheckboxListTile(
+                controlAffinity: ListTileControlAffinity.leading,
+                value: _ok.contains(i),
+                onChanged: (v) => setState(() => v == true ? _ok.add(i) : _ok.remove(i)),
+                title: Text(_regles[i], style: const TextStyle(fontWeight: FontWeight.w700)),
+              ),
+          ]),
+        ),
+        const SizedBox(height: 18),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const SaisieScreen())),
+          child: Text(_ok.length == _regles.length ? 'Je suis prête : mesurer' : 'Mesurer (${_ok.length} / ${_regles.length} vérifiés)'),
+        ),
+        const SizedBox(height: 8),
+        const Text('Puis 2 mesures à 1 minute d’écart : l’application fait la moyenne.', textAlign: TextAlign.center, style: TextStyle(color: Wt.gris, fontSize: 13)),
+      ]),
+    );
+  }
+}

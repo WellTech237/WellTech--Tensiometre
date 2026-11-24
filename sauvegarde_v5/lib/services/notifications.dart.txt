@@ -1,0 +1,146 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
+import 'package:timezone/data/latest_all.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
+
+/// Alarmes de mesure, rappels du mode crise et alertes.
+/// Tout est programmé sur le téléphone : fonctionne sans Internet.
+class Notifications {
+  Notifications._();
+  static final instance = Notifications._();
+
+  final _plugin = FlutterLocalNotificationsPlugin();
+
+  /// Appelé quand l'utilisateur touche une notification (payload).
+  void Function(String payload)? onOuverture;
+
+  static const idMatin = 100, idSoir = 101, idReport = 110, idAlerte = 300;
+  static const idCriseBase = 200; // 200 à 205
+
+  static const _canalMesure = AndroidNotificationDetails(
+    'mesures', 'Rappels de mesure',
+    channelDescription: 'Alarme à l’heure de la mesure de tension',
+    importance: Importance.max,
+    priority: Priority.high,
+    category: AndroidNotificationCategory.alarm,
+    fullScreenIntent: true,
+    playSound: true,
+    enableVibration: true,
+  );
+
+  static const _canalUrgence = AndroidNotificationDetails(
+    'urgence', 'Urgence et mode crise',
+    channelDescription: 'Alertes de niveau 3 et 4, mesures toutes les 5 minutes',
+    importance: Importance.max,
+    priority: Priority.max,
+    category: AndroidNotificationCategory.alarm,
+    fullScreenIntent: true,
+    playSound: true,
+    enableVibration: true,
+  );
+
+  static const _canalInfo = AndroidNotificationDetails(
+    'info', 'Informations',
+    channelDescription: 'Alertes de niveau 1 et 2',
+    importance: Importance.defaultImportance,
+    priority: Priority.defaultPriority,
+  );
+
+  Future<void> init() async {
+    tzdata.initializeTimeZones();
+    try {
+      final nom = await FlutterTimezone.getLocalTimezone();
+      tz.setLocalLocation(tz.getLocation(nom));
+    } catch (_) {
+      // On garde le fuseau par défaut si le nom n'est pas reconnu.
+    }
+    await _plugin.initialize(
+      const InitializationSettings(android: AndroidInitializationSettings('@mipmap/ic_launcher')),
+      onDidReceiveNotificationResponse: (r) {
+        final p = r.payload;
+        if (p != null) onOuverture?.call(p);
+      },
+    );
+    await _plugin
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.requestNotificationsPermission();
+  }
+
+  /// Payload de la notification qui a lancé l'application, s'il y en a une.
+  Future<String?> payloadAuDemarrage() async {
+    final d = await _plugin.getNotificationAppLaunchDetails();
+    if (d?.didNotificationLaunchApp ?? false) return d?.notificationResponse?.payload;
+    return null;
+  }
+
+  tz.TZDateTime _prochaine(TimeOfDay h) {
+    final now = tz.TZDateTime.now(tz.local);
+    var t = tz.TZDateTime(tz.local, now.year, now.month, now.day, h.hour, h.minute);
+    if (!t.isAfter(now)) t = t.add(const Duration(days: 1));
+    return t;
+  }
+
+  /// Programme les 2 mesures quotidiennes (répétées chaque jour).
+  Future<void> programmerMesures(TimeOfDay matin, TimeOfDay soir) async {
+    await _plugin.cancel(idMatin);
+    await _plugin.cancel(idSoir);
+    for (final e in [(idMatin, matin, 'du matin'), (idSoir, soir, 'du soir')]) {
+      await _plugin.zonedSchedule(
+        e.$1,
+        'WellTech · c’est l’heure de votre mesure',
+        'Mesure ${e.$3} : reposez-vous 5 minutes avant de commencer.',
+        _prochaine(e.$2),
+        const NotificationDetails(android: _canalMesure),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents: DateTimeComponents.time,
+        payload: 'alarme_mesure',
+      );
+    }
+  }
+
+  Future<void> reporter(Duration d) => _plugin.zonedSchedule(
+        idReport,
+        'WellTech · rappel de mesure',
+        'Votre mesure de tension vous attend.',
+        tz.TZDateTime.now(tz.local).add(d),
+        const NotificationDetails(android: _canalMesure),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'alarme_mesure',
+      );
+
+  /// Mode crise : une notification toutes les 5 min pendant 30 min.
+  Future<void> programmerCrise(DateTime debut) async {
+    await annulerCrise();
+    for (var i = 1; i <= 6; i++) {
+      final quand = tz.TZDateTime.from(debut.add(Duration(minutes: 5 * i)), tz.local);
+      await _plugin.zonedSchedule(
+        idCriseBase + i - 1,
+        i < 6 ? 'Mode crise · nouvelle mesure' : 'Fin de l’épisode de 30 minutes',
+        i < 6 ? 'Prenez votre tension maintenant et entrez les valeurs.' : 'Les secours sont-ils arrivés ? Ouvrez WellTech pour répondre.',
+        quand,
+        const NotificationDetails(android: _canalUrgence),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
+        payload: 'crise',
+      );
+    }
+  }
+
+  Future<void> annulerCrise() async {
+    for (var i = 0; i < 6; i++) {
+      await _plugin.cancel(idCriseBase + i);
+    }
+  }
+
+  /// Alerte immédiate (niveaux 2 à 4).
+  Future<void> alerter(int niveau, String titre, String texte) => _plugin.show(
+        idAlerte,
+        'WellTech · $titre',
+        texte,
+        NotificationDetails(android: niveau >= 3 ? _canalUrgence : _canalInfo),
+        payload: niveau >= 4 ? 'crise' : 'alertes',
+      );
+}

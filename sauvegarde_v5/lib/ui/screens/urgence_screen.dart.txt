@@ -1,0 +1,241 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+
+import '../../data/models.dart';
+import '../../services/app_state.dart';
+import '../../services/notifications.dart';
+import '../../services/voix.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'saisie_screen.dart';
+
+/// Écran 12 : urgence + mode crise (mesure toutes les 5 min, épisodes de 30 min).
+/// Priorité : appeler le 911. Le suivi aux 5 minutes tourne en parallèle.
+class UrgenceScreen extends StatefulWidget {
+  final int? tasDepart, tadDepart;
+  final List<String> symptomes;
+  /// Ouvert depuis l'écran verrouillé : pas d'historique, seulement 911, SMS et fiche.
+  final bool sansDonnees;
+  const UrgenceScreen({super.key, this.tasDepart, this.tadDepart, this.symptomes = const [], this.sansDonnees = false});
+  @override
+  State<UrgenceScreen> createState() => _UrgenceScreenState();
+}
+
+class _UrgenceScreenState extends State<UrgenceScreen> {
+  static const dureeEpisode = Duration(minutes: 30);
+  static const intervalle = Duration(minutes: 5);
+
+  String? _episode;
+  DateTime? _debut;
+  int _numeroEpisode = 1;
+  List<Mesure> _mesures = [];
+  Timer? _tic;
+  bool _questionPosee = false;
+
+  AppState get _e => AppState.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    Voix.instance.lire('Urgence. Appelez le 9 1 1 maintenant.');
+    if (!widget.sansDonnees) _demarrerOuReprendre();
+  }
+
+  @override
+  void dispose() {
+    _tic?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _demarrerOuReprendre() async {
+    final s = await _e.db.lireReglage('episode');
+    if (s != null && s.isNotEmpty) {
+      final parts = s.split(';');
+      _episode = parts[0];
+      _debut = DateTime.fromMillisecondsSinceEpoch(int.parse(parts[1]));
+      _numeroEpisode = int.tryParse(parts.length > 2 ? parts[2] : '1') ?? 1;
+    } else {
+      await _nouvelEpisode(1);
+    }
+    await _rafraichir();
+    _tic = Timer.periodic(const Duration(seconds: 1), (_) => _verifierFin());
+  }
+
+  Future<void> _nouvelEpisode(int numero) async {
+    _episode = _e.nouvelEpisode();
+    _debut = DateTime.now();
+    _numeroEpisode = numero;
+    _questionPosee = false;
+    await _e.db.ecrireReglage('episode', '$_episode;${_debut!.millisecondsSinceEpoch};$numero');
+    await Notifications.instance.programmerCrise(_debut!);
+  }
+
+  Future<void> _rafraichir() async {
+    if (_episode == null) return;
+    final l = await _e.db.mesuresEpisode(_episode!);
+    if (mounted) setState(() => _mesures = l);
+  }
+
+  void _verifierFin() {
+    if (!mounted || _debut == null) return;
+    setState(() {});
+    if (!_questionPosee && DateTime.now().difference(_debut!) >= dureeEpisode) {
+      _questionPosee = true;
+      _poserQuestion();
+    }
+  }
+
+  Future<void> _poserQuestion() async {
+    Voix.instance.lire('Trente minutes sont passées. Les secours sont-ils arrivés ?');
+    final arrives = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (c) => AlertDialog(
+        title: const Text('Les secours sont-ils arrivés ?'),
+        content: const Text('Oui : les mesures aux 5 minutes s’arrêtent.\nNon : un nouvel épisode de 30 minutes commence.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('Non, continuer')),
+          FilledButton(style: FilledButton.styleFrom(minimumSize: const Size(120, 48)), onPressed: () => Navigator.pop(c, true), child: const Text('Oui, arrêter')),
+        ],
+      ),
+    );
+    if (arrives == true) {
+      await _terminer();
+    } else {
+      await _nouvelEpisode(_numeroEpisode + 1);
+      await _rafraichir();
+    }
+  }
+
+  Future<void> _terminer() async {
+    _tic?.cancel();
+    await Notifications.instance.annulerCrise();
+    await _e.db.ecrireReglage('episode', '');
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  Future<void> _appeler911() => launchUrl(Uri(scheme: 'tel', path: '911'));
+
+  Future<void> _sms() {
+    final p = _e.profil;
+    final t = widget.tasDepart != null ? ' Tension : ${widget.tasDepart}/${widget.tadDepart}.' : '';
+    final msg = 'URGENCE WellTech : ${p.prenom.isEmpty ? 'je' : p.prenom} fais une crise hypertensive.$t Appelle-moi ou viens vite.';
+    return launchUrl(Uri.parse('sms:?body=${Uri.encodeComponent(msg)}'));
+  }
+
+  Future<void> _mesurer() async {
+    if (_episode == null) return;
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => SaisieScreen(episodeId: _episode)));
+    await _rafraichir();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = _e.profil;
+    final ecoule = _debut == null ? Duration.zero : DateTime.now().difference(_debut!);
+    final dansCycle = Duration(seconds: intervalle.inSeconds - (ecoule.inSeconds % intervalle.inSeconds));
+    final mm = dansCycle.inMinutes.toString();
+    final ss = (dansCycle.inSeconds % 60).toString().padLeft(2, '0');
+    return Scaffold(
+      backgroundColor: Wt.rougeNuit,
+      body: SafeArea(
+        child: ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(color: Wt.rouge, borderRadius: BorderRadius.circular(999)),
+              child: const Text('URGENCE', style: TextStyle(color: Wt.blanc, fontWeight: FontWeight.w800, letterSpacing: 1)),
+            ),
+            if (widget.tasDepart != null) Text('${widget.tasDepart}/${widget.tadDepart}', style: const TextStyle(color: Wt.blanc, fontSize: 28, fontWeight: FontWeight.w800)),
+            BoutonEcouter(texte: () => 'Urgence. Appelez le 9 1 1. Prochaine mesure dans $mm minutes.', compact: true, fond: const Color(0xFF4A1616), encre: Wt.blanc),
+          ]),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(backgroundColor: Wt.rouge, minimumSize: const Size.fromHeight(92), textStyle: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800)),
+            onPressed: _appeler911,
+            icon: const Icon(Icons.call, size: 34),
+            label: const Text('Appeler le 911'),
+          ),
+          const Padding(padding: EdgeInsets.only(top: 6), child: Text('Sans Internet, par le réseau téléphonique', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFFFFC9C9), fontSize: 13))),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(foregroundColor: Wt.blanc, side: const BorderSide(color: Color(0xFFA84848), width: 2)),
+            onPressed: _sms,
+            icon: const Icon(Icons.sms_outlined),
+            label: const Text('Prévenir un proche par SMS'),
+          ),
+          const SizedBox(height: 12),
+          Carte(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Text('Fiche pour les secours', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15)),
+                Text('À montrer', style: TextStyle(color: Wt.gris, fontWeight: FontWeight.w700, fontSize: 12)),
+              ]),
+              const SizedBox(height: 8),
+              _ligne('Antécédents', [if (p.avc) 'AVC${p.anneeAvc != null ? ' (${p.anneeAvc})' : ''}', ...p.maladies.where((m) => m != 'Autre'), if (p.autreMaladie.isNotEmpty) p.autreMaladie].join(', ')),
+              _ligne('Traitement', p.medicaments.map((m) => '${m.nom} ${m.dose}'.trim()).join(', ')),
+              _ligne('Autres infos', p.autresRenseignements),
+              if (widget.symptomes.isNotEmpty) _ligne('Symptômes', widget.symptomes.join(', ')),
+              if (p.grossesseActive) _ligne('Grossesse', '${p.semainesGrossesse ?? '?'} semaines'),
+            ]),
+          ),
+          if (!widget.sansDonnees && _debut != null) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(color: const Color(0xFF3D1414), borderRadius: BorderRadius.circular(22)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  SizedBox(
+                    width: 64,
+                    height: 64,
+                    child: Stack(alignment: Alignment.center, children: [
+                      SizedBox.expand(child: CircularProgressIndicator(value: 1 - dansCycle.inSeconds / intervalle.inSeconds, strokeWidth: 6, color: const Color(0xFFFF8787), backgroundColor: const Color(0xFF5A2020))),
+                      Text('$mm:$ss', style: const TextStyle(color: Wt.blanc, fontWeight: FontWeight.w800)),
+                    ]),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      const Text('Prochaine mesure', style: TextStyle(color: Wt.blanc, fontWeight: FontWeight.w800, fontSize: 15)),
+                      Text('Épisode $_numeroEpisode · ${ecoule.inMinutes.clamp(0, 30)} / 30 min · ${_mesures.length} mesure(s)', style: const TextStyle(color: Color(0xFFFFC9C9), fontSize: 13)),
+                    ]),
+                  ),
+                ]),
+                const SizedBox(height: 12),
+                for (final m in _mesures)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text('${m.date.hour} h ${m.date.minute.toString().padLeft(2, '0')}  ·  ${m.tas}/${m.tad}  ·  pouls ${m.pouls}', style: const TextStyle(color: Wt.blanc, fontWeight: FontWeight.w700)),
+                  ),
+                const SizedBox(height: 8),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: Wt.blanc, foregroundColor: Wt.rougeNuit, minimumSize: const Size.fromHeight(52)),
+                  onPressed: _mesurer,
+                  child: const Text('Mesurer maintenant'),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 12),
+            TextButton(
+              onPressed: _poserQuestion,
+              child: const Text('Les secours sont arrivés ? Terminer', style: TextStyle(color: Color(0xFFFFA8A8), fontWeight: FontWeight.w800)),
+            ),
+          ],
+          if (widget.sansDonnees)
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Fermer', style: TextStyle(color: Color(0xFFFFA8A8), fontWeight: FontWeight.w800))),
+        ]),
+      ),
+    );
+  }
+
+  Widget _ligne(String k, String v) => Padding(
+        padding: const EdgeInsets.only(bottom: 6),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(width: 110, child: Text(k, style: const TextStyle(color: Wt.gris, fontWeight: FontWeight.w700))),
+          Expanded(child: Text(v.isEmpty ? '—' : v, style: const TextStyle(fontWeight: FontWeight.w700))),
+        ]),
+      );
+}

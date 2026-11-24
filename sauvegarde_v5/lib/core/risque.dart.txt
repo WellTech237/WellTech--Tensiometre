@@ -1,0 +1,128 @@
+import '../data/models.dart';
+import 'classification.dart';
+
+/// Profil de risque (règles proposées par l'équipe, à valider avec le client).
+enum Risque { standard, modere, eleve, tresEleve, grossesse }
+
+extension RisqueInfo on Risque {
+  String get libelle => const {
+        Risque.standard: 'Standard',
+        Risque.modere: 'Modéré',
+        Risque.eleve: 'Élevé',
+        Risque.tresEleve: 'Très élevé',
+        Risque.grossesse: 'Grossesse',
+      }[this]!;
+
+  String get effet => const {
+        Risque.standard: 'Aucun facteur particulier : alertes standard.',
+        Risque.modere: 'Un facteur de risque : alertes standard, suivi rapproché.',
+        Risque.eleve: 'Plusieurs facteurs : chaque alerte est montée d’un niveau.',
+        Risque.tresEleve: 'Antécédent d’AVC : chaque alerte est montée d’un niveau.',
+        Risque.grossesse: 'Seuils de grossesse : alerte dès 140/90, urgence dès 160/110.',
+      }[this]!;
+
+  /// Les profils élevés font monter les alertes d'un niveau.
+  bool get renforce => this == Risque.eleve || this == Risque.tresEleve;
+}
+
+const maladiesListe = <String>[
+  'Diabète',
+  'Maladie rénale',
+  'Maladie cardiaque',
+  'Cholestérol élevé',
+  'Apnée du sommeil',
+  'HTA dans la famille',
+  'Tabac',
+];
+
+List<String> facteurs(Profil p) {
+  final f = <String>[];
+  final age = p.age;
+  if (age != null && age >= 65) f.add('$age ans');
+  final imc = p.imc;
+  if (imc != null && imc >= 30) f.add('IMC ${imc.toStringAsFixed(1).replaceAll('.', ',')}');
+  f.addAll(p.maladies.where(maladiesListe.contains));
+  if (p.autreMaladie.trim().isNotEmpty) f.add(p.autreMaladie.trim());
+  return f;
+}
+
+Risque calculerRisque(Profil p) {
+  if (p.grossesseActive) return Risque.grossesse;
+  if (p.avc) return Risque.tresEleve;
+  final n = facteurs(p).length;
+  final cardiaque = p.maladies.contains('Maladie cardiaque');
+  if (n >= 2 || cardiaque) return Risque.eleve;
+  if (n == 1) return Risque.modere;
+  return Risque.standard;
+}
+
+/// Symptômes d'alarme (AHA/ACC) : avec une tension sévère, appeler le 911.
+const symptomesAlarme = <String>[
+  'Douleur à la poitrine',
+  'Essoufflement',
+  'Mal de dos',
+  'Engourdissement',
+  'Faiblesse',
+  'Vision troublée',
+  'Difficulté à parler',
+];
+
+/// Symptômes supplémentaires pendant la grossesse.
+const symptomesGrossesse = <String>[
+  'Mal de tête sévère',
+  'Douleur abdominale',
+  'Gonflement important',
+];
+
+class DecisionAlerte {
+  final int niveau; // 1 Information, 2 Attention, 3 Médecin, 4 Urgence
+  final String titre;
+  final String conseil;
+  const DecisionAlerte(this.niveau, this.titre, this.conseil);
+
+  String get nomNiveau => const ['Information', 'Attention', 'Médecin', 'Urgence'][niveau - 1];
+}
+
+/// Matrice d'alertes : grade × symptômes × profil.
+/// - symptomesCoches : symptômes de la liste (alarme ou grossesse)
+/// - symptomesAutres : symptômes ajoutés par le patient (« Autre ») : transmis au
+///   médecin, ils ne déclenchent pas l'urgence à eux seuls.
+DecisionAlerte deciderAlerte({
+  required Grade grade,
+  required List<String> symptomesCoches,
+  required List<String> symptomesAutres,
+  required Risque risque,
+}) {
+  final alarme = symptomesCoches.isNotEmpty;
+  final unSymptome = alarme || symptomesAutres.isNotEmpty;
+
+  // Grade 3 + signe d'alarme (ou seuil grossesse sévère + signe) : urgence immédiate.
+  if (grade == Grade.grade3 && alarme) {
+    return const DecisionAlerte(4, 'Urgence : appelez le 911', 'Tension très haute avec un signe d’alarme. Appelez les secours maintenant.');
+  }
+
+  int niveau;
+  if (grade == Grade.grade3) {
+    niveau = 3;
+  } else if (grade == Grade.grade2) {
+    niveau = unSymptome ? 3 : 2;
+  } else if (grade == Grade.grade1) {
+    niveau = unSymptome ? 3 : 2;
+  } else {
+    niveau = unSymptome ? 2 : 1;
+  }
+  if (risque.renforce && niveau < 4) niveau += 1;
+  // Grossesse : un signe d'alarme avec une HTA = urgence.
+  if (risque == Risque.grossesse && alarme && grade.index >= Grade.grade2.index) niveau = 4;
+
+  switch (niveau) {
+    case 4:
+      return const DecisionAlerte(4, 'Urgence : appelez le 911', 'Avec votre profil, cette situation demande une aide immédiate.');
+    case 3:
+      return const DecisionAlerte(3, 'Contactez votre médecin aujourd’hui', 'Votre tension est haute. Ce n’est pas forcément une urgence, mais votre médecin doit le savoir.');
+    case 2:
+      return const DecisionAlerte(2, 'À surveiller', 'Votre tension est au-dessus de la normale. Reprenez une mesure au prochain rappel.');
+    default:
+      return const DecisionAlerte(1, 'Tout va bien', 'Votre tension est dans les valeurs attendues. Continuez vos mesures comme prévu.');
+  }
+}

@@ -1,0 +1,127 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../services/app_state.dart';
+import '../../services/auth_service.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'accueil_shell.dart';
+import 'profil_screen.dart';
+import 'urgence_screen.dart';
+
+/// Écran 3 : connexion d'une personne déjà inscrite sur CE téléphone.
+/// Empreinte ou PIN : fonctionne avec ou sans Internet.
+/// Le bouton Urgence est accessible sans code.
+class DeverrouillageScreen extends StatefulWidget {
+  const DeverrouillageScreen({super.key});
+  @override
+  State<DeverrouillageScreen> createState() => _DeverrouillageScreenState();
+}
+
+class _DeverrouillageScreenState extends State<DeverrouillageScreen> {
+  final _pin = TextEditingController();
+  String? _message;
+  bool _bio = false;
+  bool _verif = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initBio();
+  }
+
+  Future<void> _initBio() async {
+    final actif = await AuthService.instance.biometrieActivee() && await AuthService.instance.biometrieDisponible();
+    if (!mounted) return;
+    setState(() => _bio = actif);
+    if (actif) _essayerBio();
+  }
+
+  Future<void> _essayerBio() async {
+    if (await AuthService.instance.deverrouillerBiometrie()) _entrer();
+  }
+
+  Future<void> _essayerPin() async {
+    if (_pin.text.length != 6) {
+      setState(() => _message = 'Entrez vos 6 chiffres.');
+      return;
+    }
+    setState(() => _verif = true);
+    final err = await AuthService.instance.verifierPin(_pin.text);
+    if (!mounted) return;
+    setState(() {
+      _verif = false;
+      _message = err;
+    });
+    if (err == null) _entrer();
+    _pin.clear();
+  }
+
+  void _entrer() {
+    final profilVide = AppState.instance.profil.prenom.isEmpty;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+      builder: (_) => profilVide ? const ProfilScreen(premiereFois: true) : const AccueilShell(),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final etat = AppState.instance;
+    final prenom = etat.profil.prenom;
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Logo(), PastilleReseau(etat.enLigne)]),
+          const SizedBox(height: 36),
+          Text(prenom.isEmpty ? 'Bon retour' : 'Bon retour, $prenom', textAlign: TextAlign.center, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          const Text('Ce téléphone vous connaît déjà : la connexion fonctionne avec ou sans Internet.', textAlign: TextAlign.center, style: TextStyle(color: Wt.gris, height: 1.5)),
+          const SizedBox(height: 24),
+          if (_bio) ...[
+            Center(
+              child: Semantics(
+                button: true,
+                label: 'Se connecter avec l’empreinte',
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: _essayerBio,
+                  child: Container(
+                    width: 112,
+                    height: 112,
+                    decoration: const BoxDecoration(color: Wt.blanc, shape: BoxShape.circle),
+                    child: const Icon(Icons.fingerprint, size: 64, color: Wt.violet),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text('Touchez pour utiliser l’empreinte', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w700)),
+            const SizedBox(height: 22),
+          ],
+          const Text('Votre code PIN', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _pin,
+            obscureText: true,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onSubmitted: (_) => _essayerPin(),
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w700, letterSpacing: 8),
+            decoration: const InputDecoration(counterText: '', hintText: '6 chiffres'),
+          ),
+          if (_message != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_message!, style: const TextStyle(color: Wt.rougeTexte, fontWeight: FontWeight.w700))),
+          const SizedBox(height: 14),
+          FilledButton(onPressed: _verif ? null : _essayerPin, child: Text(_verif ? 'Vérification…' : 'Déverrouiller')),
+          const SizedBox(height: 28),
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(foregroundColor: Wt.rougeTexte, side: const BorderSide(color: Wt.rouge, width: 2)),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const UrgenceScreen(sansDonnees: true))),
+            icon: const Icon(Icons.warning_amber_rounded),
+            label: const Text('Urgence (sans code)'),
+          ),
+        ]),
+      ),
+    );
+  }
+}

@@ -1,0 +1,135 @@
+import 'package:flutter/material.dart';
+
+import '../../services/auth_service.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'inscription_screen.dart';
+
+/// Écran 1 : conditions d'utilisation, rubriques repliables + choix à cocher.
+class ConsentementScreen extends StatefulWidget {
+  const ConsentementScreen({super.key});
+  @override
+  State<ConsentementScreen> createState() => _ConsentementScreenState();
+}
+
+class _ConsentementScreenState extends State<ConsentementScreen> {
+  static const _sections = [
+    ('À quoi sert WellTech', 'Suivre votre tension à la maison, recevoir des alertes adaptées à votre profil et partager vos résultats avec votre médecin.'),
+    ('Données collectées', 'Nom, date de naissance, taille, poids, sexe, grossesse, antécédents, médicaments, mesures de tension et de pouls, symptômes.'),
+    ('Où elles sont gardées', 'Chiffrées sur votre téléphone, même sans Internet. Si vous l’acceptez, une copie est sauvegardée dans le cloud (Firebase), dont les serveurs peuvent être hors du pays.'),
+    ('Partage avec votre médecin', 'Seul le médecin que vous choisissez voit vos résultats. Il peut annoter vos mesures, jamais les modifier.'),
+    ('Vos droits', 'Consulter, corriger ou supprimer vos données, et retirer votre accord à tout moment, conformément aux lois sur la protection des données personnelles.'),
+    ('Limites de l’application', 'WellTech ne remplace pas un avis médical. En cas d’urgence, appelez le 911.'),
+  ];
+  static const _choix = [
+    ('J’accepte le traitement de mes données de santé pour ce suivi.', true),
+    ('J’ai compris que l’application ne remplace pas mon médecin.', true),
+    ('Sauvegarde dans le cloud et partage avec mon médecin.', false),
+    ('Rappels et alertes par notification.', false),
+  ];
+
+  int _ouvert = 0;
+  final _coches = <int>{3};
+
+  bool get _pret => _coches.contains(0) && _coches.contains(1);
+
+  String _texteComplet() => _sections.map((s) => '${s.$1}. ${s.$2}').join(' ');
+
+  Future<void> _accepter() async {
+    await AuthService.instance.enregistrerConsentement(cloud: _coches.contains(2), notifications: _coches.contains(3));
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const InscriptionScreen()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Column(children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Logo(), BoutonEcouter(texte: _texteComplet)]),
+              const SizedBox(height: 14),
+              const Text('Conditions d’utilisation', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 4),
+              const Text('Touchez une rubrique pour la lire. Faites défiler jusqu’en bas pour accepter.', style: TextStyle(color: Wt.gris)),
+            ]),
+          ),
+          Expanded(
+            child: ListView(padding: const EdgeInsets.fromLTRB(20, 4, 20, 16), children: [
+              for (var i = 0; i < _sections.length; i++) ...[
+                _rubrique(i),
+                const SizedBox(height: 10),
+              ],
+              const SizedBox(height: 6),
+              const Etiquette('Vos choix'),
+              const SizedBox(height: 8),
+              for (var i = 0; i < _choix.length; i++) ...[
+                _caseChoix(i),
+                const SizedBox(height: 10),
+              ],
+            ]),
+          ),
+          Container(
+            color: Wt.blanc,
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+            child: Column(children: [
+              FilledButton(onPressed: _pret ? _accepter : null, child: Text(_pret ? 'Accepter et continuer' : 'Cochez les 2 cases obligatoires')),
+              const SizedBox(height: 6),
+              const Text('Vous pourrez changer ces choix à tout moment dans Moi.', style: TextStyle(fontSize: 12, color: Wt.gris)),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _rubrique(int i) {
+    final ouvert = _ouvert == i;
+    return Carte(
+      padding: EdgeInsets.zero,
+      child: Column(children: [
+        ListTile(
+          minVerticalPadding: 14,
+          leading: Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: Wt.violetClair, borderRadius: BorderRadius.circular(10)),
+            child: Text('${i + 1}', style: const TextStyle(fontWeight: FontWeight.w800, color: Wt.violetFonce)),
+          ),
+          title: Text(_sections[i].$1, style: const TextStyle(fontWeight: FontWeight.w800)),
+          trailing: Icon(ouvert ? Icons.remove : Icons.add, color: Wt.gris),
+          onTap: () => setState(() => _ouvert = ouvert ? -1 : i),
+        ),
+        if (ouvert)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(72, 0, 16, 16),
+            child: Text(_sections[i].$2, style: const TextStyle(height: 1.5, color: Color(0xFF39424F))),
+          ),
+      ]),
+    );
+  }
+
+  Widget _caseChoix(int i) {
+    final coche = _coches.contains(i);
+    final obligatoire = _choix[i].$2;
+    return Carte(
+      onTap: () => setState(() => coche ? _coches.remove(i) : _coches.add(i)),
+      padding: const EdgeInsets.all(14),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Checkbox(value: coche, onChanged: (v) => setState(() => v == true ? _coches.add(i) : _coches.remove(i))),
+        const SizedBox(width: 4),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(_choix[i].$1, style: const TextStyle(fontWeight: FontWeight.w700, height: 1.4)),
+            const SizedBox(height: 2),
+            Text(obligatoire ? 'Obligatoire' : 'Facultatif',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: obligatoire ? Wt.rougeTexte : Wt.gris)),
+          ]),
+        ),
+      ]),
+    );
+  }
+}

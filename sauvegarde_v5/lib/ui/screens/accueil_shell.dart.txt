@@ -1,0 +1,262 @@
+import 'package:flutter/material.dart';
+
+import '../../core/classification.dart';
+import '../../core/risque.dart';
+import '../../services/app_state.dart';
+import '../../services/auth_service.dart';
+import '../../services/cloud.dart';
+import '../../services/voix.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'alarme_screen.dart';
+import 'alertes_screen.dart';
+import 'graphiques_screen.dart';
+import 'preparation_screen.dart';
+import 'profil_screen.dart';
+
+/// Coquille principale avec la barre de navigation (Accueil, Graphiques, Alertes, Moi).
+class AccueilShell extends StatefulWidget {
+  const AccueilShell({super.key});
+  @override
+  State<AccueilShell> createState() => _AccueilShellState();
+}
+
+class _AccueilShellState extends State<AccueilShell> {
+  int _onglet = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: AppState.instance,
+      builder: (context, _) => Scaffold(
+        body: SafeArea(
+          child: IndexedStack(index: _onglet, children: [
+            AccueilTab(versAlertes: () => setState(() => _onglet = 2)),
+            const GraphiquesScreen(),
+            const AlertesScreen(),
+            const MoiTab(),
+          ]),
+        ),
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: _onglet,
+          backgroundColor: Wt.blanc,
+          indicatorColor: Wt.violetClair,
+          onDestinationSelected: (i) => setState(() => _onglet = i),
+          destinations: [
+            const NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Accueil'),
+            const NavigationDestination(icon: Icon(Icons.show_chart), label: 'Graphiques'),
+            NavigationDestination(
+              icon: Badge(
+                isLabelVisible: AppState.instance.alertesNonLues > 0,
+                label: Text('${AppState.instance.alertesNonLues}'),
+                child: const Icon(Icons.notifications_outlined),
+              ),
+              label: 'Alertes',
+            ),
+            const NavigationDestination(icon: Icon(Icons.person_outline), label: 'Moi'),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Écran 5 : dernière mesure, prochaine mesure, bouton Mesurer.
+class AccueilTab extends StatelessWidget {
+  final VoidCallback versAlertes;
+  const AccueilTab({super.key, required this.versAlertes});
+
+  @override
+  Widget build(BuildContext context) {
+    final e = AppState.instance;
+    final m = e.derniere;
+    final grade = m == null ? null : Grade.values.byName(m.grade);
+    final prochaine = e.prochaineMesure();
+    final reste = prochaine.difference(DateTime.now());
+    final resteTxt = reste.inHours > 0 ? 'dans ${reste.inHours} h ${(reste.inMinutes % 60).toString().padLeft(2, '0')}' : 'dans ${reste.inMinutes} min';
+
+    String resume() {
+      final b = StringBuffer('Bonjour ${e.profil.prenom}. ');
+      if (m != null) {
+        b.write('Votre dernière mesure est de ${Voix.tension(m.tas, m.tad)}, ${grade!.libelle}. ');
+      } else {
+        b.write('Vous n’avez pas encore de mesure. ');
+      }
+      b.write('Prochaine mesure à ${AppState.formatHeure(TimeOfDay.fromDateTime(prochaine))}.');
+      return b.toString();
+    }
+
+    return ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+      Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Logo(taille: 30),
+            const SizedBox(height: 10),
+            Text('Bonjour ${e.profil.prenom}', style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+          ]),
+        ),
+        Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          PastilleReseau(e.enLigne),
+          const SizedBox(height: 8),
+          BoutonEcouter(texte: resume, compact: true),
+        ]),
+      ]),
+      const SizedBox(height: 14),
+      Carte(
+        child: m == null
+            ? const Text('Aucune mesure pour l’instant. Touchez « Mesurer maintenant » pour commencer.', style: TextStyle(height: 1.5))
+            : Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [const Etiquette('Dernière mesure'), Text(formatDate(m.date), style: const TextStyle(fontSize: 12, color: Wt.gris, fontWeight: FontWeight.w700))]),
+                const SizedBox(height: 8),
+                Row(crossAxisAlignment: CrossAxisAlignment.baseline, textBaseline: TextBaseline.alphabetic, children: [
+                  Text('${m.tas}/${m.tad}', style: const TextStyle(fontSize: 46, fontWeight: FontWeight.w800, letterSpacing: -2)),
+                  const SizedBox(width: 10),
+                  Text('mmHg · pouls ${m.pouls}', style: const TextStyle(color: Wt.gris, fontWeight: FontWeight.w600)),
+                ]),
+                const SizedBox(height: 8),
+                Wrap(spacing: 8, crossAxisAlignment: WrapCrossAlignment.center, children: [
+                  PuceGrade(grade!, long: true),
+                  if (m.nbLectures > 1) const Text('moyenne de 2 mesures', style: TextStyle(fontSize: 13, color: Wt.gris)),
+                ]),
+                const SizedBox(height: 10),
+                _echelle(grade!),
+              ]),
+      ),
+      const SizedBox(height: 12),
+      Carte(
+        couleur: Wt.encre,
+        child: Row(children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(color: const Color(0xFF24314B), borderRadius: BorderRadius.circular(16)),
+            child: const Icon(Icons.alarm, color: Color(0xFF7BE0B5), size: 28),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Etiquette('Prochaine mesure', couleur: Color(0xFFB7BFCC)),
+              Text(AppState.formatHeure(TimeOfDay.fromDateTime(prochaine)), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Wt.blanc)),
+              Text('Alarme activée · $resteTxt', style: const TextStyle(color: Color(0xFF7BE0B5), fontWeight: FontWeight.w700, fontSize: 13)),
+            ]),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const AlarmeScreen())),
+            child: const Text('Tester', style: TextStyle(color: Color(0xFFA9A1F5), fontWeight: FontWeight.w800)),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      Carte(
+        onTap: versAlertes,
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text('Profil de risque : ${e.risque.libelle}', style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text(e.alertesNonLues > 0 ? '${e.alertesNonLues} alerte(s) à lire' : 'Aucune alerte', style: const TextStyle(color: Wt.violet, fontWeight: FontWeight.w800)),
+        ]),
+      ),
+      const SizedBox(height: 20),
+      FilledButton.icon(
+        style: FilledButton.styleFrom(minimumSize: const Size.fromHeight(62)),
+        onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PreparationScreen())),
+        icon: const Icon(Icons.add),
+        label: const Text('Mesurer maintenant'),
+      ),
+    ]);
+  }
+
+  Widget _echelle(Grade g) => Row(children: [
+        for (final x in Grade.values)
+          Expanded(
+            child: Container(
+              height: 8,
+              margin: const EdgeInsets.symmetric(horizontal: 2),
+              decoration: BoxDecoration(
+                color: x == g ? couleursGrade(x).plein : couleursGrade(x).fond,
+                borderRadius: BorderRadius.circular(4),
+                border: x == g ? Border.all(color: Wt.encre, width: 2) : null,
+              ),
+            ),
+          ),
+      ]);
+}
+
+/// Onglet Moi : profil, heures de mesure, déconnexion.
+class MoiTab extends StatelessWidget {
+  const MoiTab({super.key});
+
+  Future<void> _choisirHeure(BuildContext context, bool matin) async {
+    final e = AppState.instance;
+    final t = await showTimePicker(context: context, initialTime: matin ? e.heureMatin : e.heureSoir, helpText: matin ? 'Mesure du matin' : 'Mesure du soir');
+    if (t == null) return;
+    await e.changerHeures(matin ? t : e.heureMatin, matin ? e.heureSoir : t);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final e = AppState.instance;
+    final p = e.profil;
+    return ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+      const Text('Moi', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+      const SizedBox(height: 12),
+      Carte(
+        couleur: Wt.encre,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('${p.prenom} ${p.nom}${p.age != null ? ' · ${p.age} ans' : ''}', style: const TextStyle(color: Wt.blanc, fontSize: 18, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 6),
+          Text('Risque ${e.risque.libelle.toLowerCase()}', style: const TextStyle(color: Color(0xFFFFC9C9), fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          TextButton(
+            style: TextButton.styleFrom(padding: EdgeInsets.zero),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ProfilScreen())),
+            child: const Text('Modifier mon profil', style: TextStyle(color: Color(0xFFA9A1F5), fontWeight: FontWeight.w800)),
+          ),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      Carte(
+        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+        child: Column(children: [
+          ListTile(title: const Text('Mesure du matin', style: TextStyle(fontWeight: FontWeight.w700)), trailing: Text(AppState.formatHeure(e.heureMatin), style: const TextStyle(fontWeight: FontWeight.w800)), onTap: () => _choisirHeure(context, true)),
+          ListTile(title: const Text('Mesure du soir', style: TextStyle(fontWeight: FontWeight.w700)), trailing: Text(AppState.formatHeure(e.heureSoir), style: const TextStyle(fontWeight: FontWeight.w800)), onTap: () => _choisirHeure(context, false)),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      FutureBuilder<(String, DateTime?, bool)>(
+        future: (() async => (
+              await AuthService.instance.statutCloud(),
+              await Cloud.instance.derniereSynchro(),
+              await AuthService.instance.consentementCloud(),
+            ))(),
+        builder: (context, s) {
+          final d = s.data;
+          final actif = d?.$1 == 'synchro';
+          final derniere = d?.$2;
+          String texte;
+          if (!Cloud.instance.pret) {
+            texte = 'Sauvegarde cloud : pas encore configurée (fichier google-services.json manquant).';
+          } else if (d != null && !d.$3) {
+            texte = 'Sauvegarde cloud : refusée dans votre consentement. Vos données restent sur ce téléphone.';
+          } else {
+            texte = 'Compte cloud : ${actif ? 'actif' : 'en attente de création'}\n'
+                'Dernière synchronisation : ${derniere == null ? 'jamais' : formatDate(derniere)}'
+                '${e.dernierMessageSynchro.isEmpty ? '' : '\n${e.dernierMessageSynchro}'}';
+          }
+          return Carte(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Text(texte, style: const TextStyle(height: 1.5)),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  final m = await e.synchroniser();
+                  if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
+                },
+                icon: const Icon(Icons.cloud_upload_outlined),
+                label: const Text('Synchroniser maintenant'),
+              ),
+            ]),
+          );
+        },
+      ),
+    ]);
+  }
+}

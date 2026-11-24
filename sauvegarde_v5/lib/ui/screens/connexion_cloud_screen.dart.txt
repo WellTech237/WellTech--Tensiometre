@@ -1,0 +1,119 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../services/app_state.dart';
+import '../../services/auth_service.dart';
+import '../../services/cloud.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'accueil_shell.dart';
+import 'profil_screen.dart';
+
+/// Connexion d'un compte existant sur un NOUVEAU téléphone (Internet requis :
+/// les données sont dans le cloud). Ensuite, tout fonctionne hors ligne.
+class ConnexionCloudScreen extends StatefulWidget {
+  const ConnexionCloudScreen({super.key});
+  @override
+  State<ConnexionCloudScreen> createState() => _ConnexionCloudScreenState();
+}
+
+class _ConnexionCloudScreenState extends State<ConnexionCloudScreen> {
+  final _email = TextEditingController();
+  final _mdp = TextEditingController();
+  final _pin = TextEditingController();
+  final _pin2 = TextEditingController();
+  bool _enCours = false;
+  String? _erreur;
+
+  Future<void> _connecter() async {
+    String? err;
+    if (!RegExp(r'^\d{6}$').hasMatch(_pin.text)) err = 'Choisissez un PIN de 6 chiffres pour ce téléphone.';
+    if (_pin.text != _pin2.text) err = 'Les deux PIN ne sont pas identiques.';
+    if (_email.text.trim().isEmpty || _mdp.text.isEmpty) err = 'Entrez votre courriel et votre mot de passe.';
+    setState(() => _erreur = err);
+    if (err != null) return;
+    setState(() => _enCours = true);
+    final (e, profil) = await Cloud.instance.connecterEtRecuperer(_email.text, _mdp.text);
+    if (e != null && profil == null) {
+      if (mounted) setState(() {
+        _enCours = false;
+        _erreur = e;
+      });
+      return;
+    }
+    final auth = AuthService.instance;
+    final bio = await auth.biometrieDisponible();
+    await auth.creerCompteLocal(email: _email.text, motDePasse: _mdp.text, pin: _pin.text, biometrie: bio);
+    await auth.marquerCloudActif();
+    final etat = AppState.instance;
+    if (profil != null) await etat.enregistrerProfil(profil, synchroniser: false);
+    await etat.charger();
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => etat.profil.prenom.isEmpty ? const ProfilScreen(premiereFois: true) : const AccueilShell()),
+      (_) => false,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final etat = AppState.instance;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Se connecter', style: TextStyle(fontWeight: FontWeight.w800))),
+      body: ListenableBuilder(
+        listenable: etat,
+        builder: (context, _) => ListView(padding: const EdgeInsets.fromLTRB(20, 4, 20, 24), children: [
+          Align(alignment: Alignment.centerRight, child: PastilleReseau(etat.enLigne)),
+          const SizedBox(height: 12),
+          Carte(
+            couleur: etat.enLigne ? Wt.vertClair : Wt.jaune,
+            padding: const EdgeInsets.all(14),
+            child: Text(
+              etat.enLigne
+                  ? 'Vos mesures seront récupérées depuis le cloud, puis disponibles hors ligne sur ce téléphone.'
+                  : 'Internet est nécessaire ici : vos données sont dans le cloud. Rien n’est perdu, réessayez dès que le réseau revient.',
+              style: const TextStyle(fontWeight: FontWeight.w600, height: 1.5),
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Text('Courriel', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          TextField(controller: _email, keyboardType: TextInputType.emailAddress, autocorrect: false),
+          const SizedBox(height: 12),
+          const Text('Mot de passe', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          TextField(controller: _mdp, obscureText: true),
+          const SizedBox(height: 14),
+          const Text('Nouveau PIN pour ce téléphone (6 chiffres)', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(child: _pinChamp(_pin, 'PIN')),
+            const SizedBox(width: 8),
+            Expanded(child: _pinChamp(_pin2, 'Confirmer')),
+          ]),
+          if (_erreur != null) ...[
+            const SizedBox(height: 12),
+            Carte(couleur: Wt.rougeClair, padding: const EdgeInsets.all(12), child: Text(_erreur!, style: const TextStyle(color: Wt.rougeTexte, fontWeight: FontWeight.w700))),
+          ],
+          const SizedBox(height: 18),
+          FilledButton(
+            onPressed: (_enCours || !etat.enLigne) ? null : _connecter,
+            child: _enCours
+                ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 3, color: Wt.blanc))
+                : Text(etat.enLigne ? 'Se connecter' : 'En attente du réseau'),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _pinChamp(TextEditingController c, String aide) => TextField(
+        controller: c,
+        obscureText: true,
+        keyboardType: TextInputType.number,
+        maxLength: 6,
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 4),
+        decoration: InputDecoration(counterText: '', hintText: aide),
+      );
+}

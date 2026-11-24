@@ -1,0 +1,156 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../services/app_state.dart';
+import '../../services/auth_service.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'connexion_cloud_screen.dart';
+import 'profil_screen.dart';
+
+/// Écran 2 : inscription, possible avec ou sans Internet.
+/// Hors ligne, le compte est créé sur le téléphone et sera envoyé au cloud
+/// (Firebase, étape 2) dès le retour du réseau.
+class InscriptionScreen extends StatefulWidget {
+  const InscriptionScreen({super.key});
+  @override
+  State<InscriptionScreen> createState() => _InscriptionScreenState();
+}
+
+class _InscriptionScreenState extends State<InscriptionScreen> {
+  final _email = TextEditingController();
+  final _mdp = TextEditingController();
+  final _pin = TextEditingController();
+  final _pin2 = TextEditingController();
+  bool _biometrie = true;
+  bool _bioDispo = false;
+  bool _enCours = false;
+  String? _erreur;
+
+  @override
+  void initState() {
+    super.initState();
+    AuthService.instance.biometrieDisponible().then((v) => setState(() => _bioDispo = v));
+  }
+
+  String? _valider() {
+    final e = _email.text.trim();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(e)) return 'Entrez une adresse courriel valide.';
+    final m = _mdp.text;
+    if (m.length < 8 || !m.contains(RegExp(r'\d'))) return 'Le mot de passe doit avoir 8 caractères dont un chiffre.';
+    if (!RegExp(r'^\d{6}$').hasMatch(_pin.text)) return 'Le PIN doit contenir exactement 6 chiffres.';
+    if (_pin.text != _pin2.text) return 'Les deux PIN ne sont pas identiques.';
+    if (const ['123456', '000000', '111111', '654321'].contains(_pin.text)) return 'Ce PIN est trop facile à deviner.';
+    return null;
+  }
+
+  Future<void> _creer() async {
+    final err = _valider();
+    setState(() => _erreur = err);
+    if (err != null) return;
+    setState(() => _enCours = true);
+    await AuthService.instance.creerCompteLocal(
+      email: _email.text,
+      motDePasse: _mdp.text,
+      pin: _pin.text,
+      biometrie: _biometrie && _bioDispo,
+    );
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ProfilScreen(premiereFois: true)));
+  }
+
+  void _dejaInscrit() {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ConnexionCloudScreen()));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final etat = AppState.instance;
+    return Scaffold(
+      body: SafeArea(
+        child: ListenableBuilder(
+          listenable: etat,
+          builder: (context, _) {
+            final enLigne = etat.enLigne;
+            return ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const Etiquette('Étape 1 sur 2 · compte'),
+                PastilleReseau(enLigne),
+              ]),
+              const SizedBox(height: 12),
+              const Text('Créer votre compte', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 12),
+              Carte(
+                couleur: enLigne ? Wt.vertClair : Wt.jaune,
+                padding: const EdgeInsets.all(14),
+                child: Text(
+                  enLigne
+                      ? 'Votre compte est créé tout de suite, sur ce téléphone et dans le cloud.'
+                      : 'Pas d’Internet ? Vous pouvez commencer quand même. Vos données restent sur le téléphone et votre compte sera créé dans le cloud au retour du réseau.',
+                  style: TextStyle(fontWeight: FontWeight.w600, height: 1.5, color: enLigne ? const Color(0xFF0B4F37) : const Color(0xFF5C3300)),
+                ),
+              ),
+              const SizedBox(height: 14),
+              _champ('Courriel', _email, clavier: TextInputType.emailAddress),
+              _champ('Mot de passe', _mdp, cache: true, aide: '8 caractères minimum, dont un chiffre'),
+              const SizedBox(height: 6),
+              Carte(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('Code de déverrouillage (sert aussi hors ligne)', style: TextStyle(fontWeight: FontWeight.w800)),
+                  const SizedBox(height: 10),
+                  Row(children: [
+                    Expanded(child: _pinChamp('PIN (6 chiffres)', _pin)),
+                    const SizedBox(width: 8),
+                    Expanded(child: _pinChamp('Confirmer', _pin2)),
+                  ]),
+                  if (_bioDispo)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Déverrouiller aussi par empreinte', style: TextStyle(fontWeight: FontWeight.w700)),
+                      value: _biometrie,
+                      onChanged: (v) => setState(() => _biometrie = v),
+                    ),
+                ]),
+              ),
+              if (_erreur != null) ...[
+                const SizedBox(height: 12),
+                Carte(couleur: Wt.rougeClair, padding: const EdgeInsets.all(12), child: Text(_erreur!, style: const TextStyle(color: Wt.rougeTexte, fontWeight: FontWeight.w700))),
+              ],
+              const SizedBox(height: 18),
+              FilledButton(
+                onPressed: _enCours ? null : _creer,
+                child: _enCours
+                    ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 3, color: Wt.blanc))
+                    : Text(enLigne ? 'Créer mon compte' : 'Commencer hors ligne'),
+              ),
+              TextButton(onPressed: _dejaInscrit, child: const Text('J’ai déjà un compte', style: TextStyle(fontWeight: FontWeight.w800))),
+            ]);
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _champ(String label, TextEditingController c, {bool cache = false, TextInputType? clavier, String? aide}) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          TextField(controller: c, obscureText: cache, keyboardType: clavier, autocorrect: false, decoration: InputDecoration(helperText: aide)),
+        ]),
+      );
+
+  Widget _pinChamp(String label, TextEditingController c) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Wt.gris)),
+        const SizedBox(height: 4),
+        TextField(
+          controller: c,
+          obscureText: true,
+          keyboardType: TextInputType.number,
+          maxLength: 6,
+          inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700, letterSpacing: 4),
+          decoration: const InputDecoration(counterText: '', fillColor: Wt.fond),
+        ),
+      ]);
+}

@@ -1,0 +1,108 @@
+import 'package:flutter/material.dart';
+
+import '../../data/models.dart';
+import '../../services/app_state.dart';
+import '../../services/voix.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+
+/// Écran 11 : centre des alertes (alerte active, 4 niveaux, historique).
+class AlertesScreen extends StatefulWidget {
+  const AlertesScreen({super.key});
+  @override
+  State<AlertesScreen> createState() => _AlertesScreenState();
+}
+
+class _AlertesScreenState extends State<AlertesScreen> {
+  int _ouvert = -1;
+
+  static const _niveaux = [
+    ('Information', 'Normale ou élevée, sans symptôme', 'Message calme dans l’application, sans son. Conseils de prévention.'),
+    ('Attention', 'Grade 1 ou 2, sans symptôme', 'Alerte enregistrée et mesure de contrôle au prochain rappel.'),
+    ('Médecin', 'Grade 2 + symptôme, ou grade 3 sans signe d’alarme', 'Notification qui reste affichée. Votre médecin doit être informé aujourd’hui.'),
+    ('Urgence', 'Grade 3 + signe d’alarme, ou ≥ 160/110 si enceinte avec un signe', 'Plein écran, son fort, bouton 911, SMS à un proche, mesures toutes les 5 min par épisodes de 30 min.'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final e = AppState.instance;
+    return FutureBuilder<List<AlerteEnregistree>>(
+      future: e.db.alertes(),
+      builder: (context, snap) {
+        final liste = snap.data ?? const <AlerteEnregistree>[];
+        final actives = liste.where((a) => !a.lue && a.niveau >= 3);
+        final AlerteEnregistree? active = actives.isEmpty ? null : actives.first;
+        return ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            const Text('Alertes', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w800)),
+            if (active != null) BoutonEcouter(texte: () => '${active.titre}. ${active.detail}', compact: true),
+          ]),
+          const SizedBox(height: 12),
+          if (active != null) ...[
+            Carte(
+              couleur: couleurNiveau(active.niveau),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Etiquette('Active · niveau ${active.niveau} · ${formatDate(active.date)}', couleur: Wt.blanc),
+                const SizedBox(height: 6),
+                Text(active.titre, style: const TextStyle(color: Wt.blanc, fontSize: 17, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 4),
+                Text(active.detail, style: const TextStyle(color: Wt.blanc, height: 1.4)),
+                const SizedBox(height: 10),
+                OutlinedButton(
+                  style: OutlinedButton.styleFrom(foregroundColor: Wt.blanc, side: const BorderSide(color: Wt.blanc, width: 2), minimumSize: const Size.fromHeight(44)),
+                  onPressed: () async {
+                    await e.db.marquerAlertesLues();
+                    e.alertesNonLues = 0;
+                    Voix.instance.stop();
+                    setState(() {});
+                  },
+                  child: const Text('J’ai compris'),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 14),
+          ],
+          const Etiquette('Les 4 niveaux (grade + symptômes + profil)'),
+          const SizedBox(height: 8),
+          for (var i = 0; i < 4; i++) ...[
+            Carte(
+              padding: EdgeInsets.zero,
+              child: Column(children: [
+                ListTile(
+                  leading: CircleAvatar(backgroundColor: couleurNiveau(i + 1), child: Text('${i + 1}', style: const TextStyle(color: Wt.blanc, fontWeight: FontWeight.w800))),
+                  title: Text(_niveaux[i].$1, style: const TextStyle(fontWeight: FontWeight.w800)),
+                  subtitle: Text(_niveaux[i].$2),
+                  trailing: Icon(_ouvert == i ? Icons.remove : Icons.add),
+                  onTap: () => setState(() => _ouvert = _ouvert == i ? -1 : i),
+                ),
+                if (_ouvert == i)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(72, 0, 16, 14),
+                    child: Text('${_niveaux[i].$3}${i >= 1 ? ' Un profil élevé ou très élevé monte l’alerte d’un niveau.' : ''}', style: const TextStyle(height: 1.45)),
+                  ),
+              ]),
+            ),
+            const SizedBox(height: 8),
+          ],
+          const SizedBox(height: 6),
+          const Etiquette('Historique'),
+          const SizedBox(height: 8),
+          if (liste.isEmpty)
+            const Carte(child: Text('Aucune alerte pour l’instant.'))
+          else
+            Carte(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+              child: Column(children: [
+                for (final a in liste)
+                  ListTile(
+                    leading: Icon(Icons.circle, size: 12, color: couleurNiveau(a.niveau)),
+                    title: Text(a.titre, style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: Text('${formatDate(a.date)} · ${a.detail}'),
+                  ),
+              ]),
+            ),
+        ]);
+      },
+    );
+  }
+}

@@ -1,0 +1,196 @@
+import 'dart:convert';
+
+class Medicament {
+  String nom;
+  String dose;
+  String frequence;
+  Medicament({this.nom = '', this.dose = '', this.frequence = ''});
+
+  Map<String, dynamic> toJson() => {'nom': nom, 'dose': dose, 'frequence': frequence};
+  factory Medicament.fromJson(Map<String, dynamic> j) =>
+      Medicament(nom: j['nom'] ?? '', dose: j['dose'] ?? '', frequence: j['frequence'] ?? '');
+}
+
+/// Profil du patient (écran « Profil, une question à la fois »).
+class Profil {
+  String prenom;
+  String nom;
+  DateTime? naissance;
+  bool femme;
+  bool enceinte;
+  int? semainesGrossesse;
+  double? tailleCm;
+  double? poidsKg;
+  bool avc;
+  int? anneeAvc;
+  Set<String> maladies;
+  String autreMaladie;
+  bool prendMedicaments;
+  List<Medicament> medicaments;
+  String autresRenseignements;
+
+  Profil({
+    this.prenom = '',
+    this.nom = '',
+    this.naissance,
+    this.femme = true,
+    this.enceinte = false,
+    this.semainesGrossesse,
+    this.tailleCm,
+    this.poidsKg,
+    this.avc = false,
+    this.anneeAvc,
+    Set<String>? maladies,
+    this.autreMaladie = '',
+    this.prendMedicaments = false,
+    List<Medicament>? medicaments,
+    this.autresRenseignements = '',
+  })  : maladies = maladies ?? <String>{},
+        medicaments = medicaments ?? <Medicament>[];
+
+  int? get age {
+    final n = naissance;
+    if (n == null) return null;
+    final now = DateTime.now();
+    var a = now.year - n.year;
+    if (now.month < n.month || (now.month == n.month && now.day < n.day)) a--;
+    return a;
+  }
+
+  double? get imc {
+    final t = tailleCm, p = poidsKg;
+    if (t == null || p == null || t <= 0) return null;
+    final m = t / 100;
+    return p / (m * m);
+  }
+
+  bool get grossesseActive => femme && enceinte;
+
+  Map<String, dynamic> toJson() => {
+        'prenom': prenom,
+        'nom': nom,
+        'naissance': naissance?.toIso8601String(),
+        'femme': femme,
+        'enceinte': enceinte,
+        'semainesGrossesse': semainesGrossesse,
+        'tailleCm': tailleCm,
+        'poidsKg': poidsKg,
+        'avc': avc,
+        'anneeAvc': anneeAvc,
+        'maladies': maladies.toList(),
+        'autreMaladie': autreMaladie,
+        'prendMedicaments': prendMedicaments,
+        'medicaments': medicaments.map((m) => m.toJson()).toList(),
+        'autresRenseignements': autresRenseignements,
+      };
+
+  factory Profil.fromJson(Map<String, dynamic> j) => Profil(
+        prenom: j['prenom'] ?? '',
+        nom: j['nom'] ?? '',
+        naissance: j['naissance'] != null ? DateTime.tryParse(j['naissance']) : null,
+        femme: j['femme'] ?? true,
+        enceinte: j['enceinte'] ?? false,
+        semainesGrossesse: j['semainesGrossesse'],
+        tailleCm: (j['tailleCm'] as num?)?.toDouble(),
+        poidsKg: (j['poidsKg'] as num?)?.toDouble(),
+        avc: j['avc'] ?? false,
+        anneeAvc: j['anneeAvc'],
+        maladies: Set<String>.from(j['maladies'] ?? const []),
+        autreMaladie: j['autreMaladie'] ?? '',
+        prendMedicaments: j['prendMedicaments'] ?? false,
+        medicaments: ((j['medicaments'] ?? const []) as List)
+            .map((e) => Medicament.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+        autresRenseignements: j['autresRenseignements'] ?? '',
+      );
+
+  String encoder() => jsonEncode(toJson());
+  static Profil decoder(String s) => Profil.fromJson(jsonDecode(s));
+}
+
+/// Une séance de mesure : moyenne de 1 ou 2 lectures. Jamais modifiée après coup
+/// (on ajoute, on ne remplace pas) pour éviter les conflits de synchronisation.
+class Mesure {
+  final String id; // UUID créé sur le téléphone = identifiant Firestore plus tard
+  final DateTime date;
+  final int tas;
+  final int tad;
+  final int pouls;
+  final int nbLectures;
+  final String grade; // nom de l'enum Grade
+  final List<String> symptomes;
+  final int niveauAlerte; // 1 à 4
+  final String? episodeId; // mesures d'un épisode de crise
+  final String syncStatus; // pending | synced
+
+  Mesure({
+    required this.id,
+    required this.date,
+    required this.tas,
+    required this.tad,
+    required this.pouls,
+    required this.nbLectures,
+    required this.grade,
+    required this.symptomes,
+    required this.niveauAlerte,
+    this.episodeId,
+    this.syncStatus = 'pending',
+  });
+
+  Map<String, Object?> toRow() => {
+        'id': id,
+        'date_ms': date.millisecondsSinceEpoch,
+        'tas': tas,
+        'tad': tad,
+        'pouls': pouls,
+        'nb_lectures': nbLectures,
+        'grade': grade,
+        'symptomes': jsonEncode(symptomes),
+        'niveau_alerte': niveauAlerte,
+        'episode_id': episodeId,
+        'sync_status': syncStatus,
+      };
+
+  factory Mesure.fromRow(Map<String, Object?> r) => Mesure(
+        id: r['id'] as String,
+        date: DateTime.fromMillisecondsSinceEpoch(r['date_ms'] as int),
+        tas: r['tas'] as int,
+        tad: r['tad'] as int,
+        pouls: r['pouls'] as int,
+        nbLectures: r['nb_lectures'] as int,
+        grade: r['grade'] as String,
+        symptomes: List<String>.from(jsonDecode(r['symptomes'] as String)),
+        niveauAlerte: r['niveau_alerte'] as int,
+        episodeId: r['episode_id'] as String?,
+        syncStatus: r['sync_status'] as String,
+      );
+}
+
+class AlerteEnregistree {
+  final String id;
+  final DateTime date;
+  final int niveau;
+  final String titre;
+  final String detail;
+  final bool lue;
+
+  AlerteEnregistree({required this.id, required this.date, required this.niveau, required this.titre, required this.detail, this.lue = false});
+
+  Map<String, Object?> toRow() => {
+        'id': id,
+        'date_ms': date.millisecondsSinceEpoch,
+        'niveau': niveau,
+        'titre': titre,
+        'detail': detail,
+        'lue': lue ? 1 : 0,
+      };
+
+  factory AlerteEnregistree.fromRow(Map<String, Object?> r) => AlerteEnregistree(
+        id: r['id'] as String,
+        date: DateTime.fromMillisecondsSinceEpoch(r['date_ms'] as int),
+        niveau: r['niveau'] as int,
+        titre: r['titre'] as String,
+        detail: r['detail'] as String,
+        lue: (r['lue'] as int) == 1,
+      );
+}

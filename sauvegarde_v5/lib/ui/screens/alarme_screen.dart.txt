@@ -1,0 +1,78 @@
+import 'package:flutter/material.dart';
+
+import '../../core/classification.dart';
+import '../../services/app_state.dart';
+import '../../services/notifications.dart';
+import '../../services/voix.dart';
+import '../../theme.dart';
+import 'preparation_screen.dart';
+
+/// Écran 6 : alarme de mesure, affiché quand la notification est touchée.
+class AlarmeScreen extends StatefulWidget {
+  const AlarmeScreen({super.key});
+  @override
+  State<AlarmeScreen> createState() => _AlarmeScreenState();
+}
+
+class _AlarmeScreenState extends State<AlarmeScreen> {
+  @override
+  void initState() {
+    super.initState();
+    Voix.instance.lire('C’est l’heure de votre mesure de tension. Asseyez-vous et reposez-vous cinq minutes.');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final m = AppState.instance.derniere;
+    final now = TimeOfDay.now();
+    return Scaffold(
+      backgroundColor: const Color(0xFF1B1650),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(22, 40, 22, 24),
+          child: Column(children: [
+            Container(
+              width: 132,
+              height: 132,
+              decoration: BoxDecoration(color: const Color(0xFF2C2580), shape: BoxShape.circle, border: Border.all(color: const Color(0xFF3A3299), width: 10)),
+              child: const Icon(Icons.notifications_active_outlined, color: Wt.blanc, size: 60),
+            ),
+            const SizedBox(height: 16),
+            Text('${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}', style: const TextStyle(fontSize: 64, fontWeight: FontWeight.w800, color: Wt.blanc, letterSpacing: -2)),
+            const Text('C’est l’heure de votre mesure', textAlign: TextAlign.center, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Wt.blanc)),
+            const SizedBox(height: 18),
+            if (m != null)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(color: const Color(0xFF2C2580), borderRadius: BorderRadius.circular(22)),
+                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    const Text('MESURE PRÉCÉDENTE', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Color(0xFFCFCBFF))),
+                    Text('${m.tas}/${m.tad}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Wt.blanc)),
+                  ]),
+                  Text(Grade.values.byName(m.grade).court, style: const TextStyle(color: Color(0xFFFFC9A8), fontWeight: FontWeight.w800)),
+                ]),
+              ),
+            const Spacer(),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Wt.blanc, foregroundColor: const Color(0xFF1B1650), minimumSize: const Size.fromHeight(64)),
+              onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const PreparationScreen())),
+              child: const Text('Commencer la mesure'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton(
+              style: OutlinedButton.styleFrom(foregroundColor: Wt.blanc, side: const BorderSide(color: Color(0xFF5A51C4), width: 2)),
+              onPressed: () async {
+                await Notifications.instance.reporter(const Duration(minutes: 10));
+                if (context.mounted) Navigator.of(context).pop();
+              },
+              child: const Text('Rappeler dans 10 min'),
+            ),
+            const SizedBox(height: 10),
+            const Text('Sans réponse, le rappel revient au prochain horaire prévu.', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFFCFCBFF), fontSize: 12)),
+          ]),
+        ),
+      ),
+    );
+  }
+}

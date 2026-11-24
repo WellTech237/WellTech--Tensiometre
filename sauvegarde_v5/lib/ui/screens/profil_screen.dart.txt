@@ -1,0 +1,404 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import '../../core/risque.dart';
+import '../../data/models.dart';
+import '../../services/app_state.dart';
+import '../../services/notifications.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'accueil_shell.dart';
+
+/// Écran 4 : profil, une question à la fois (méthode de la V2).
+class ProfilScreen extends StatefulWidget {
+  final bool premiereFois;
+  const ProfilScreen({super.key, this.premiereFois = false});
+  @override
+  State<ProfilScreen> createState() => _ProfilScreenState();
+}
+
+class _MedCtrl {
+  final nom = TextEditingController();
+  final dose = TextEditingController();
+  final freq = TextEditingController();
+  _MedCtrl([Medicament? m]) {
+    nom.text = m?.nom ?? '';
+    dose.text = m?.dose ?? '';
+    freq.text = m?.frequence ?? '';
+  }
+}
+
+class _ProfilScreenState extends State<ProfilScreen> {
+  late Profil p;
+  int _etape = 0;
+  String? _erreur;
+  final _prenom = TextEditingController();
+  final _nom = TextEditingController();
+  final _semaines = TextEditingController();
+  final _taille = TextEditingController();
+  final _poids = TextEditingController();
+  final _anneeAvc = TextEditingController();
+  final _autreMaladie = TextEditingController();
+  final _autresInfos = TextEditingController();
+  final List<_MedCtrl> _meds = [];
+
+  @override
+  void initState() {
+    super.initState();
+    p = Profil.fromJson(AppState.instance.profil.toJson()); // copie modifiable
+    _prenom.text = p.prenom;
+    _nom.text = p.nom;
+    _semaines.text = p.semainesGrossesse?.toString() ?? '';
+    _taille.text = p.tailleCm?.toStringAsFixed(0) ?? '';
+    _poids.text = p.poidsKg?.toStringAsFixed(0) ?? '';
+    _anneeAvc.text = p.anneeAvc?.toString() ?? '';
+    _autreMaladie.text = p.autreMaladie;
+    _autresInfos.text = p.autresRenseignements;
+    _meds.addAll(p.medicaments.map(_MedCtrl.new));
+    if (_meds.isEmpty) _meds.add(_MedCtrl());
+  }
+
+  List<int> get _ordre => [0, 1, 2, if (p.femme) 3, 4, 5, 6, 7];
+
+  static const _questions = {
+    0: ('Identité', 'Comment vous appelez-vous ?'),
+    1: ('Identité', 'Quelle est votre date de naissance ?'),
+    2: ('Identité', 'Vous êtes…'),
+    3: ('Grossesse', 'Êtes-vous enceinte ?'),
+    4: ('Corpulence', 'Votre taille et votre poids'),
+    5: ('Antécédents', 'Vos antécédents médicaux'),
+    6: ('Traitement', 'Prenez-vous des médicaments ?'),
+    7: ('Résumé', 'Votre profil est prêt'),
+  };
+
+  void _lireChamps() {
+    p.prenom = _prenom.text.trim();
+    p.nom = _nom.text.trim();
+    p.semainesGrossesse = int.tryParse(_semaines.text);
+    p.tailleCm = double.tryParse(_taille.text.replaceAll(',', '.'));
+    p.poidsKg = double.tryParse(_poids.text.replaceAll(',', '.'));
+    p.anneeAvc = int.tryParse(_anneeAvc.text);
+    p.autreMaladie = _autreMaladie.text.trim();
+    p.autresRenseignements = _autresInfos.text.trim();
+    p.medicaments = _meds
+        .map((m) => Medicament(nom: m.nom.text.trim(), dose: m.dose.text.trim(), frequence: m.freq.text.trim()))
+        .where((m) => m.nom.isNotEmpty)
+        .toList();
+  }
+
+  String? _verifier() {
+    switch (_etape) {
+      case 0:
+        if (p.prenom.isEmpty || p.nom.isEmpty) return 'Entrez votre prénom et votre nom.';
+      case 1:
+        if (p.naissance == null) return 'Choisissez votre date de naissance.';
+      case 3:
+        if (p.enceinte && (p.semainesGrossesse == null || p.semainesGrossesse! < 1 || p.semainesGrossesse! > 42)) return 'Indiquez le nombre de semaines (1 à 42).';
+      case 4:
+        final t = p.tailleCm, w = p.poidsKg;
+        if (t == null || t < 100 || t > 230) return 'Taille attendue entre 100 et 230 cm.';
+        if (w == null || w < 25 || w > 300) return 'Poids attendu entre 25 et 300 kg.';
+      case 6:
+        if (p.prendMedicaments && p.medicaments.isEmpty) return 'Ajoutez au moins un médicament, ou répondez « Non ».';
+    }
+    return null;
+  }
+
+  void _suivant() {
+    _lireChamps();
+    final err = _verifier();
+    setState(() => _erreur = err);
+    if (err != null) return;
+    final i = _ordre.indexOf(_etape);
+    if (i < _ordre.length - 1) setState(() => _etape = _ordre[i + 1]);
+  }
+
+  void _precedent() {
+    _lireChamps();
+    final i = _ordre.indexOf(_etape);
+    if (i > 0) {
+      setState(() {
+        _etape = _ordre[i - 1];
+        _erreur = null;
+      });
+    } else if (!widget.premiereFois) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _enregistrer() async {
+    _lireChamps();
+    if (!p.femme) p.enceinte = false;
+    final etat = AppState.instance;
+    await etat.enregistrerProfil(p);
+    if (widget.premiereFois) {
+      await Notifications.instance.programmerMesures(etat.heureMatin, etat.heureSoir);
+      if (!mounted) return;
+      Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const AccueilShell()), (_) => false);
+    } else {
+      if (mounted) Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pos = _ordre.indexOf(_etape);
+    final q = _questions[_etape]!;
+    final fin = _etape == 7;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              IconButton.filled(
+                style: IconButton.styleFrom(backgroundColor: Wt.blanc, foregroundColor: Wt.encre, minimumSize: const Size(48, 48)),
+                onPressed: _precedent,
+                icon: const Icon(Icons.arrow_back),
+                tooltip: 'Question précédente',
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(value: (pos + 1) / _ordre.length, minHeight: 8, color: Wt.violet, backgroundColor: const Color(0xFFE1E5EC)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text('${pos + 1} / ${_ordre.length}', style: const TextStyle(fontWeight: FontWeight.w800, color: Wt.gris)),
+            ]),
+            const SizedBox(height: 18),
+            Etiquette(q.$1, couleur: Wt.violet),
+            const SizedBox(height: 4),
+            Text(q.$2, style: const TextStyle(fontSize: 27, fontWeight: FontWeight.w800, height: 1.15)),
+            const SizedBox(height: 16),
+            Expanded(child: SingleChildScrollView(child: _contenu())),
+            if (_erreur != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: Carte(couleur: Wt.rougeClair, padding: const EdgeInsets.all(12), child: Text(_erreur!, style: const TextStyle(color: Wt.rougeTexte, fontWeight: FontWeight.w700))),
+              ),
+            FilledButton(onPressed: fin ? _enregistrer : _suivant, child: Text(fin ? 'Enregistrer mon profil' : 'Suivant')),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _contenu() {
+    switch (_etape) {
+      case 0:
+        return Column(children: [_champ('Prénom', _prenom), _champ('Nom', _nom)]);
+      case 1:
+        final n = p.naissance;
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          OutlinedButton.icon(
+            onPressed: () async {
+              final d = await showDatePicker(
+                context: context,
+                initialDate: n ?? DateTime(1970),
+                firstDate: DateTime(1900),
+                lastDate: DateTime.now(),
+                helpText: 'Date de naissance',
+              );
+              if (d != null) setState(() => p.naissance = d);
+            },
+            icon: const Icon(Icons.calendar_month_outlined),
+            label: Text(n == null ? 'Choisir la date' : '${n.day}/${n.month}/${n.year}'),
+          ),
+          const SizedBox(height: 12),
+          if (p.age != null)
+            Carte(child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              const Text('Âge calculé', style: TextStyle(fontWeight: FontWeight.w700)),
+              Text('${p.age} ans', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+            ])),
+        ]);
+      case 2:
+        return Column(children: [
+          _option('Une femme', p.femme, () => setState(() => p.femme = true)),
+          _option('Un homme', !p.femme, () => setState(() {
+                p.femme = false;
+                p.enceinte = false;
+              })),
+        ]);
+      case 3:
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('La grossesse change les seuils de tension et les signes d’alerte.', style: TextStyle(color: Wt.gris, height: 1.5)),
+          const SizedBox(height: 12),
+          _option('Non', !p.enceinte, () => setState(() => p.enceinte = false)),
+          _option('Oui', p.enceinte, () => setState(() => p.enceinte = true)),
+          if (p.enceinte) _champ('Depuis combien de semaines ?', _semaines, nombre: true),
+        ]);
+      case 4:
+        final imc = p.imc;
+        return Column(children: [
+          Row(children: [
+            Expanded(child: _champ('Taille (cm)', _taille, nombre: true, onChanged: (_) => setState(_lireChamps))),
+            const SizedBox(width: 10),
+            Expanded(child: _champ('Poids (kg)', _poids, nombre: true, onChanged: (_) => setState(_lireChamps))),
+          ]),
+          if (imc != null)
+            Carte(
+              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                const Text('IMC calculé', style: TextStyle(fontWeight: FontWeight.w700)),
+                Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                  Text(imc.toStringAsFixed(1).replaceAll('.', ','), style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w800)),
+                  Text(_categorieImc(imc), style: const TextStyle(fontWeight: FontWeight.w700, color: Wt.gris)),
+                ]),
+              ]),
+            ),
+        ]);
+      case 5:
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          const Text('Avez-vous déjà fait un AVC ?', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: _option('Oui', p.avc, () => setState(() => p.avc = true))),
+            const SizedBox(width: 8),
+            Expanded(child: _option('Non', !p.avc, () => setState(() => p.avc = false))),
+          ]),
+          if (p.avc) _champ('En quelle année ?', _anneeAvc, nombre: true),
+          const SizedBox(height: 8),
+          const Text('Maladies (touchez tout ce qui s’applique)', style: TextStyle(fontWeight: FontWeight.w800)),
+          const SizedBox(height: 8),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            for (final m in [...maladiesListe, 'Autre'])
+              Puce(texte: m, active: p.maladies.contains(m), onTap: () => setState(() => p.maladies.contains(m) ? p.maladies.remove(m) : p.maladies.add(m))),
+          ]),
+          if (p.maladies.contains('Autre')) Padding(padding: const EdgeInsets.only(top: 12), child: _champ('Précisez la maladie', _autreMaladie)),
+        ]);
+      case 6:
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Row(children: [
+            Expanded(child: _option('Oui', p.prendMedicaments, () => setState(() => p.prendMedicaments = true))),
+            const SizedBox(width: 8),
+            Expanded(child: _option('Non', !p.prendMedicaments, () => setState(() => p.prendMedicaments = false))),
+          ]),
+          if (p.prendMedicaments) ...[
+            for (var i = 0; i < _meds.length; i++) _carteMedicament(i),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(foregroundColor: Wt.violet, side: const BorderSide(color: Wt.violet, width: 2)),
+              onPressed: () => setState(() => _meds.add(_MedCtrl())),
+              icon: const Icon(Icons.add),
+              label: const Text('Ajouter un médicament'),
+            ),
+          ],
+          const SizedBox(height: 12),
+          TextField(controller: _autresInfos, maxLines: 3, decoration: const InputDecoration(hintText: 'Autres renseignements (allergies, remarques…)')),
+        ]);
+      default:
+        final r = calculerRisque(p);
+        final couleur = switch (r) {
+          Risque.standard => Wt.vertTexte,
+          Risque.modere => const Color(0xFF8A6100),
+          Risque.eleve => Wt.orange,
+          Risque.tresEleve => Wt.rougeTexte,
+          Risque.grossesse => const Color(0xFF7A3EB0),
+        };
+        final f = [
+          if (p.age != null) '${p.age} ans',
+          if (p.imc != null) 'IMC ${p.imc!.toStringAsFixed(1).replaceAll('.', ',')}',
+          if (p.avc) 'AVC${p.anneeAvc != null ? ' (${p.anneeAvc})' : ''}',
+          ...facteurs(p).where((x) => !x.startsWith('IMC') && !x.endsWith('ans')),
+          if (p.prendMedicaments) ...p.medicaments.map((m) => '${m.nom} ${m.dose}'.trim()),
+          if (p.grossesseActive) 'Enceinte (${p.semainesGrossesse ?? '?'} sem.)',
+        ];
+        return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          Carte(
+            couleur: couleur,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Etiquette('Profil de risque calculé', couleur: Wt.blanc),
+              const SizedBox(height: 6),
+              Text(r.libelle, style: const TextStyle(fontSize: 28, fontWeight: FontWeight.w800, color: Wt.blanc)),
+              const SizedBox(height: 4),
+              Text(r.effet, style: const TextStyle(color: Wt.blanc, height: 1.45)),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          Carte(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Etiquette('Pris en compte'),
+              const SizedBox(height: 8),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final x in f)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(color: Wt.violetClair, borderRadius: BorderRadius.circular(999)),
+                    child: Text(x, style: const TextStyle(color: Wt.violetFonce, fontWeight: FontWeight.w700)),
+                  ),
+              ]),
+            ]),
+          ),
+          const SizedBox(height: 10),
+          const Text('Ces règles de profil sont une proposition de l’équipe, à valider par un professionnel de santé.', style: TextStyle(fontSize: 12, color: Wt.gris)),
+        ]);
+    }
+  }
+
+  static String _categorieImc(double v) => v < 18.5
+      ? 'Maigreur (< 18,5)'
+      : v < 25
+          ? 'Normal'
+          : v < 30
+              ? 'Surpoids (25 à 29,9)'
+              : 'Obésité (≥ 30)';
+
+  Widget _carteMedicament(int i) {
+    final m = _meds[i];
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Carte(
+        padding: const EdgeInsets.all(12),
+        child: Column(children: [
+          Row(children: [
+            Expanded(child: TextField(controller: m.nom, decoration: const InputDecoration(hintText: 'Nom du médicament', fillColor: Wt.fond))),
+            IconButton(tooltip: 'Retirer', onPressed: () => setState(() => _meds.removeAt(i)), icon: const Icon(Icons.close)),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: TextField(controller: m.dose, decoration: const InputDecoration(hintText: 'Dose (ex. 5 mg)', fillColor: Wt.fond))),
+            const SizedBox(width: 8),
+            Expanded(child: TextField(controller: m.freq, decoration: const InputDecoration(hintText: 'Fois par jour', fillColor: Wt.fond))),
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  Widget _option(String texte, bool actif, VoidCallback onTap) => Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Semantics(
+          selected: actif,
+          button: true,
+          child: Material(
+            color: Wt.blanc,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: actif ? Wt.violet : Wt.blanc, width: 2)),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: onTap,
+              child: Container(
+                constraints: const BoxConstraints(minHeight: 60),
+                alignment: Alignment.centerLeft,
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Text(texte, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  Widget _champ(String label, TextEditingController c, {bool nombre = false, ValueChanged<String>? onChanged}) => Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: c,
+            onChanged: onChanged,
+            keyboardType: nombre ? TextInputType.number : TextInputType.name,
+            inputFormatters: nombre ? [FilteringTextInputFormatter.allow(RegExp(r'[0-9,.]'))] : null,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+        ]),
+      );
+}

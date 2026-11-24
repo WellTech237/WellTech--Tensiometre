@@ -1,0 +1,173 @@
+import 'package:flutter/material.dart';
+
+import '../../core/classification.dart';
+import '../../services/app_state.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'resultat_screen.dart';
+
+/// Écran 8 : saisie au clavier, 2 lectures, valeurs contrôlées.
+/// En mode crise (episodeId fourni), une seule lecture suffit.
+class SaisieScreen extends StatefulWidget {
+  final String? episodeId;
+  const SaisieScreen({super.key, this.episodeId});
+  @override
+  State<SaisieScreen> createState() => _SaisieScreenState();
+}
+
+class _SaisieScreenState extends State<SaisieScreen> {
+  final _v = ['', '', ''];
+  int _champ = 0;
+  final List<(int, int, int)> _lectures = [];
+
+  bool get _crise => widget.episodeId != null;
+  int get _lecturesVoulues => _crise ? 1 : 2;
+
+  int? _n(int i) => _v[i].length >= 2 ? int.tryParse(_v[i]) : null;
+
+  String? get _erreur => verifierValeurs(tas: _n(0), tad: _n(1), pouls: _n(2));
+
+  bool get _complet => _n(0) != null && _n(1) != null && _n(2) != null && _erreur == null;
+
+  void _touche(String t) {
+    setState(() {
+      if (t == '⌫') {
+        if (_v[_champ].isNotEmpty) {
+          _v[_champ] = _v[_champ].substring(0, _v[_champ].length - 1);
+        } else if (_champ > 0) {
+          _champ--;
+        }
+      } else if (t == 'OK') {
+        if (_champ < 2) _champ++;
+      } else if (_v[_champ].length < 3) {
+        _v[_champ] += t;
+        if (_champ < 2 && _v[_champ].length == 3) _champ++;
+      }
+    });
+  }
+
+  void _valider() {
+    if (!_complet) return;
+    _lectures.add((_n(0)!, _n(1)!, _n(2)!));
+    if (_lectures.length < _lecturesVoulues) {
+      setState(() {
+        _v.setAll(0, ['', '', '']);
+        _champ = 0;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Mesure 1 enregistrée. Attendez 1 minute, puis reprenez la mesure.')));
+      return;
+    }
+    final n = _lectures.length;
+    final tas = (_lectures.map((l) => l.$1).reduce((a, b) => a + b) / n).round();
+    final tad = (_lectures.map((l) => l.$2).reduce((a, b) => a + b) / n).round();
+    final pouls = (_lectures.map((l) => l.$3).reduce((a, b) => a + b) / n).round();
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+      builder: (_) => ResultatScreen(tas: tas, tad: tad, pouls: pouls, nbLectures: n, episodeId: widget.episodeId),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enceinte = AppState.instance.profil.grossesseActive;
+    Grade? apercu;
+    if (_complet) {
+      final all = [..._lectures, (_n(0)!, _n(1)!, _n(2)!)];
+      final tas = (all.map((l) => l.$1).reduce((a, b) => a + b) / all.length).round();
+      final tad = (all.map((l) => l.$2).reduce((a, b) => a + b) / all.length).round();
+      apercu = classerPour(tas, tad, enceinte: enceinte);
+    }
+    final err = _erreur;
+    final numLecture = _lectures.length + 1;
+    return Scaffold(
+      appBar: AppBar(title: Text(_crise ? 'Mesure de contrôle' : 'Mesure $numLecture sur $_lecturesVoulues', style: const TextStyle(fontWeight: FontWeight.w800))),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            if (_lectures.isNotEmpty && !_crise)
+              Carte(
+                couleur: Wt.vertClair,
+                padding: const EdgeInsets.all(12),
+                child: Text('Mesure 1 ✓  ${_lectures.first.$1}/${_lectures.first.$2} · pouls ${_lectures.first.$3}', style: const TextStyle(fontWeight: FontWeight.w800, color: Wt.vertTexte)),
+              ),
+            const SizedBox(height: 10),
+            Row(children: [
+              for (var i = 0; i < 3; i++) ...[
+                Expanded(child: _case(i)),
+                if (i < 2) const SizedBox(width: 8),
+              ],
+            ]),
+            const SizedBox(height: 10),
+            if (err != null)
+              Carte(couleur: Wt.rougeClair, padding: const EdgeInsets.all(12), child: Text(err, style: const TextStyle(color: Wt.rougeTexte, fontWeight: FontWeight.w700)))
+            else
+              Carte(
+                couleur: apercu == null ? Wt.blanc : couleursGrade(apercu).fond,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                  Text(_lectures.isEmpty ? 'Classification' : 'Moyenne des 2 mesures', style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text(apercu?.court ?? 'en attente', style: TextStyle(fontWeight: FontWeight.w800, color: apercu == null ? Wt.gris : couleursGrade(apercu).texte)),
+                ]),
+              ),
+            const Spacer(),
+            GridView.count(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: 2.1,
+              children: [
+                for (final t in ['1', '2', '3', '4', '5', '6', '7', '8', '9', '⌫', '0', 'OK'])
+                  Semantics(
+                    label: t == '⌫' ? 'Effacer' : (t == 'OK' ? 'Champ suivant' : t),
+                    button: true,
+                    child: Material(
+                      color: t == 'OK' ? Wt.encre : Wt.blanc,
+                      borderRadius: BorderRadius.circular(18),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(18),
+                        onTap: () => _touche(t),
+                        child: Center(child: Text(t, style: TextStyle(fontSize: 24, fontWeight: FontWeight.w800, color: t == 'OK' ? Wt.blanc : Wt.encre))),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _complet ? _valider : null,
+              child: Text(_lectures.length + 1 < _lecturesVoulues ? 'Enregistrer la mesure 1' : 'Voir le résultat'),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _case(int i) {
+    const noms = ['TAS', 'TAD', 'Pouls'];
+    const aides = ['chiffre du haut', 'chiffre du bas', 'battements/min'];
+    final actif = _champ == i;
+    return Semantics(
+      label: '${noms[i]} : ${_v[i].isEmpty ? 'vide' : _v[i]}',
+      button: true,
+      child: Material(
+        color: Wt.blanc,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20), side: BorderSide(color: actif ? Wt.violet : Wt.blanc, width: 3)),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () => setState(() => _champ = i),
+          child: SizedBox(
+            height: 100,
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(noms[i], style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: Wt.gris)),
+              Text(_v[i].isEmpty ? '–' : _v[i], style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w800, letterSpacing: -1)),
+              Text(aides[i], style: const TextStyle(fontSize: 10, color: Wt.gris)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}

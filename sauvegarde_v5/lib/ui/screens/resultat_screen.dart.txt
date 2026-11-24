@@ -1,0 +1,148 @@
+import 'package:flutter/material.dart';
+
+import '../../core/classification.dart';
+import '../../core/risque.dart';
+import '../../services/app_state.dart';
+import '../../services/voix.dart';
+import '../../theme.dart';
+import '../widgets.dart';
+import 'urgence_screen.dart';
+
+/// Écran 9 : résultat + symptômes (liste V3 + « Autre »).
+class ResultatScreen extends StatefulWidget {
+  final int tas, tad, pouls, nbLectures;
+  final String? episodeId;
+  const ResultatScreen({super.key, required this.tas, required this.tad, required this.pouls, required this.nbLectures, this.episodeId});
+  @override
+  State<ResultatScreen> createState() => _ResultatScreenState();
+}
+
+class _ResultatScreenState extends State<ResultatScreen> {
+  final _coches = <String>{};
+  final _autres = <String>[];
+  final _autreCtrl = TextEditingController();
+  bool _autreOuvert = false;
+  bool _enregistre = false;
+
+  AppState get _e => AppState.instance;
+  Grade get _grade => classerPour(widget.tas, widget.tad, enceinte: _e.profil.grossesseActive);
+  DecisionAlerte get _decision => deciderAlerte(grade: _grade, symptomesCoches: _coches.toList(), symptomesAutres: _autres, risque: _e.risque);
+
+  List<String> get _liste => [...symptomesAlarme, if (_e.profil.grossesseActive) ...symptomesGrossesse];
+
+  String _texteVoix() {
+    final d = _decision;
+    return 'Votre tension est de ${Voix.tension(widget.tas, widget.tad)}. ${_grade.libelle}. ${d.titre}. ${d.conseil}';
+  }
+
+  void _ajouterAutre() {
+    final t = _autreCtrl.text.trim();
+    if (t.isEmpty) return;
+    setState(() {
+      _autres.add(t);
+      _autreCtrl.clear();
+    });
+  }
+
+  Future<void> _enregistrer() async {
+    if (_enregistre) return;
+    setState(() => _enregistre = true);
+    final (_, decision) = await _e.enregistrerMesure(
+      tas: widget.tas,
+      tad: widget.tad,
+      pouls: widget.pouls,
+      nbLectures: widget.nbLectures,
+      symptomesCoches: _coches.toList(),
+      symptomesAutres: _autres,
+      episodeId: widget.episodeId,
+    );
+    if (!mounted) return;
+    if (widget.episodeId != null) {
+      Navigator.of(context).pop();
+    } else if (decision.niveau == 4) {
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => UrgenceScreen(tasDepart: widget.tas, tadDepart: widget.tad, symptomes: [..._coches, ..._autres])));
+    } else {
+      Navigator.of(context).pop();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final d = _decision;
+    final fond = couleurNiveau(d.niveau);
+    return Scaffold(
+      body: SafeArea(
+        child: ListView(padding: const EdgeInsets.fromLTRB(20, 16, 20, 24), children: [
+          Carte(
+            couleur: fond,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Etiquette('${_grade.court} · niveau ${d.niveau} sur 4 · ${d.nomNiveau}', couleur: Wt.blanc),
+              const SizedBox(height: 6),
+              Text('${widget.tas}/${widget.tad}', style: const TextStyle(fontSize: 46, fontWeight: FontWeight.w800, color: Wt.blanc, letterSpacing: -2)),
+              Text('pouls ${widget.pouls} (${etatPouls(widget.pouls)})${widget.nbLectures > 1 ? ' · moyenne de ${widget.nbLectures} mesures' : ''}', style: const TextStyle(color: Wt.blanc, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Text(d.titre, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: Wt.blanc)),
+              const SizedBox(height: 4),
+              Text(d.conseil, style: const TextStyle(color: Wt.blanc, height: 1.4)),
+              const SizedBox(height: 10),
+              BoutonEcouter(texte: _texteVoix),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          Carte(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Text('Ressentez-vous un de ces signes ?', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800)),
+              const SizedBox(height: 10),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                for (final s in _liste)
+                  Puce(texte: s, active: _coches.contains(s), couleur: Wt.rouge, onTap: () => setState(() => _coches.contains(s) ? _coches.remove(s) : _coches.add(s))),
+                for (final s in _autres)
+                  Puce(texte: '$s  ×', active: true, onTap: () => setState(() => _autres.remove(s))),
+                Puce(texte: _autreOuvert ? 'Autre −' : 'Autre +', active: false, onTap: () => setState(() => _autreOuvert = !_autreOuvert)),
+              ]),
+              if (_autreOuvert) ...[
+                const SizedBox(height: 10),
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _autreCtrl,
+                      onSubmitted: (_) => _ajouterAutre(),
+                      decoration: const InputDecoration(hintText: 'Ex. vertiges, saignement de nez', fillColor: Wt.fond),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton(style: FilledButton.styleFrom(minimumSize: const Size(96, 52)), onPressed: _ajouterAutre, child: const Text('Ajouter')),
+                ]),
+              ],
+              if (_autres.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                const Text('Symptômes ajoutés : transmis à votre médecin avec la mesure.', style: TextStyle(fontSize: 12, color: Wt.gris)),
+              ],
+            ]),
+          ),
+          const SizedBox(height: 12),
+          if (d.niveau == 4)
+            FilledButton.icon(
+              style: FilledButton.styleFrom(backgroundColor: Wt.rouge),
+              onPressed: _enregistre ? null : _enregistrer,
+              icon: const Icon(Icons.warning_amber_rounded),
+              label: const Text('Ouvrir l’écran d’urgence'),
+            )
+          else ...[
+            Carte(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Etiquette('Et maintenant'),
+                const SizedBox(height: 6),
+                Text('Prochaine mesure à ${AppState.formatHeure(TimeOfDay.fromDateTime(_e.prochaineMesure()))} : l’alarme sonnera.', style: const TextStyle(fontWeight: FontWeight.w700, height: 1.4)),
+              ]),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: _enregistre ? null : _enregistrer, child: const Text('Enregistrer et terminer')),
+          ],
+          const SizedBox(height: 8),
+          const Text('Enregistré sur le téléphone, même sans Internet.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: Wt.gris)),
+        ]),
+      ),
+    );
+  }
+}

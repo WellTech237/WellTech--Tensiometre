@@ -1,0 +1,62 @@
+import 'package:flutter/material.dart';
+
+/// Couleurs de la maquette WellTech (Version 5).
+class Wt {
+  static const fond = Color(0xFFF4F2EE);
+  static const encre = Color(0xFF0E1726);
+  static const gris = Color(0xFF556070);
+  static const bordure = Color(0xFFE4E7EC);
+  static const blanc = Color(0xFFFFFFFF);
+  static const violet = Color(0xFF4C3FD1);
+  static const violetClair = Color(0xFFF1EFFD);
+  static const violetFonce = Color(0xFF3A2FB0);
+  static const vert = Color(0xFF0B7A55);
+  static const vertClair = Color(0xFFE3F5EC);
+  static const vertTexte = Color(0xFF0B6B47);
+  static const jaune = Color(0xFFFFF3D6);
+  static const jauneTexte = Color(0xFF7A5300);
+  static const orange = Color(0xFFB4470C);
+  static const orangeClair = Color(0xFFFFE8D6);
+  static const orangeTexte = Color(0xFF9C3A00);
+  static const rouge = Color(0xFFC92A2A);
+  static const rougeClair = Color(0xFFFFE3E3);
+  static const rougeTexte = Color(0xFFA61E1E);
+  static const rougeNuit = Color(0xFF2A0B0B);
+  static const tad = Color(0xFF0B7A75);
+}
+
+ThemeData welltechTheme() {
+  final base = ThemeData(
+    useMaterial3: true,
+    colorScheme: ColorScheme.fromSeed(seedColor: Wt.violet, surface: Wt.fond),
+    scaffoldBackgroundColor: Wt.fond,
+  );
+  return base.copyWith(
+    textTheme: base.textTheme.apply(bodyColor: Wt.encre, displayColor: Wt.encre),
+    appBarTheme: const AppBarTheme(backgroundColor: Wt.fond, foregroundColor: Wt.encre, elevation: 0, scrolledUnderElevation: 0),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: Wt.blanc,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide.none),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: Wt.violet,
+        foregroundColor: Wt.blanc,
+        minimumSize: const Size.fromHeight(58),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        textStyle: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: Wt.encre,
+        minimumSize: const Size.fromHeight(52),
+        side: const BorderSide(color: Wt.bordure, width: 2),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+      ),
+    ),
+  );
+}

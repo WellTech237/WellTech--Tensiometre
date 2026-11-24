@@ -1,0 +1,64 @@
+name: welltech
+description: "WellTech - tensiomètre intelligent (projet GNG 1503)"
+publish_to: "none"
+version: 0.12.0+15
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Français / anglais (dates, boutons système)
+  flutter_localizations:
+    sdk: flutter
+  # Base de données locale chiffrée (fonctionne sans Internet)
+  sqflite_sqlcipher: ^3.1.0
+  path: ^1.9.0
+  # Coffre-fort du téléphone (PIN haché, clé de la base)
+  flutter_secure_storage: ^9.2.2
+  crypto: ^3.0.3
+  # Empreinte / visage
+  local_auth: ^2.3.0
+  # Alarmes et alertes
+  flutter_local_notifications: ^17.2.3
+  timezone: ^0.9.4
+  flutter_timezone: ^3.0.1
+  # Lecture à voix haute
+  flutter_tts: ^4.0.2
+  # Graphiques
+  fl_chart: ^0.68.0
+  # Appel du 911, SMS
+  url_launcher: ^6.3.0
+  # Identifiants uniques (évite les doublons à la synchronisation)
+  uuid: ^4.4.0
+  # Détection du réseau
+  connectivity_plus: ^6.0.5
+  # Étape 2 : comptes et sauvegarde cloud (versions les plus récentes compatibles)
+  firebase_core:
+  firebase_auth:
+  cloud_firestore:
+  # Rapport PDF (portail du médecin et app de la patiente) et
+  # téléchargement dans le navigateur (portail).
+  pdf: ^3.11.0
+  # Partage du PDF depuis l'app Android (feuille de partage du téléphone).
+  printing: ^5.13.0
+  # Courriel aux admins (EmailJS) à chaque demande de compte médecin.
+  http: ^1.2.0
+  web: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  # Police très lisible (Atkinson Hyperlegible, Braille Institute, licence OFL)
+  # incluse dans l'application : fonctionne aussi sans Internet.
+  fonts:
+    - family: Atkinson
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegible-Regular.ttf
+        - asset: assets/fonts/AtkinsonHyperlegible-Bold.ttf
+          weight: 700

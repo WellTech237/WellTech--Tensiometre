@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "469641786473",
+    "project_id": "welltech-fb14",
+    "storage_bucket": "welltech-fb14.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:469641786473:android:a06d3936fe0e0648c59ef8",
+        "android_client_info": {
+          "package_name": "com.welltech.welltech"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB3HBs9K6k7DJuQvkUn1_WXHA-JwjWzyaY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

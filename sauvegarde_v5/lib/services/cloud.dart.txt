@@ -1,0 +1,175 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
+
+import '../data/database.dart';
+import '../data/models.dart';
+import 'auth_service.dart';
+
+/// Étape 2 : sauvegarde dans le cloud (Firebase).
+/// Principe « boîte d'envoi » : l'application écrit TOUJOURS d'abord dans
+/// SQLite ; les mesures « pending » partent vers Firestore dès qu'Internet est
+/// là. L'UUID de la mesure sert d'identifiant Firestore : renvoyer deux fois la
+/// même mesure réécrit le même document, donc jamais de doublon.
+class Cloud {
+  Cloud._();
+  static final instance = Cloud._();
+
+  bool pret = false;
+  bool _enCours = false;
+  final _db = BaseLocale.instance;
+
+  FirebaseAuth get _auth => FirebaseAuth.instance;
+  FirebaseFirestore get _fs => FirebaseFirestore.instance;
+
+  /// Si google-services.json manque ou si Firebase échoue, l'application
+  /// continue en mode 100 % local.
+  Future<void> init() async {
+    try {
+      await Firebase.initializeApp();
+      pret = true;
+    } catch (_) {
+      pret = false;
+    }
+  }
+
+  DocumentReference<Map<String, dynamic>> _utilisateur(String uid) => _fs.collection('users').doc(uid);
+
+  static String messageErreur(FirebaseAuthException e) => switch (e.code) {
+        'email-already-in-use' => 'Ce courriel a déjà un compte.',
+        'invalid-email' => 'Adresse courriel invalide.',
+        'weak-password' => 'Mot de passe trop faible.',
+        'user-not-found' || 'wrong-password' || 'invalid-credential' => 'Courriel ou mot de passe incorrect.',
+        'network-request-failed' => 'Pas de connexion Internet.',
+        'too-many-requests' => 'Trop d’essais. Réessayez dans quelques minutes.',
+        _ => 'Erreur du compte cloud (${e.code}).',
+      };
+
+  /// Crée le compte Firebase d'une inscription faite hors ligne.
+  /// Renvoie null si le compte cloud est prêt, sinon un message.
+  Future<String?> assurerCompte() async {
+    if (!pret) return 'Firebase n’est pas encore configuré.';
+    if (_auth.currentUser != null) return null;
+    final auth = AuthService.instance;
+    final email = await auth.email();
+    final mdp = await auth.mdpEnAttente();
+    if (email == null) return 'Aucun compte sur ce téléphone.';
+    if (mdp == null) return 'Reconnectez-vous en ligne pour réactiver la sauvegarde.';
+    try {
+      await _auth.createUserWithEmailAndPassword(email: email, password: mdp);
+      try {
+        await _auth.currentUser?.sendEmailVerification();
+      } catch (_) {}
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'email-already-in-use') {
+        // Compte peut-être créé lors d'un essai précédent : on tente la connexion.
+        try {
+          await _auth.signInWithEmailAndPassword(email: email, password: mdp);
+        } on FirebaseAuthException catch (e2) {
+          return messageErreur(e2);
+        }
+      } else {
+        return messageErreur(e);
+      }
+    }
+    await auth.marquerCloudActif();
+    return null;
+  }
+
+  Map<String, dynamic> _versCloud(Mesure m) => {
+        'id': m.id,
+        'date': Timestamp.fromMillisecondsSinceEpoch(m.date.millisecondsSinceEpoch),
+        'date_ms': m.date.millisecondsSinceEpoch,
+        'tas': m.tas,
+        'tad': m.tad,
+        'pouls': m.pouls,
+        'nb_lectures': m.nbLectures,
+        'grade': m.grade,
+        'symptomes': m.symptomes,
+        'niveau_alerte': m.niveauAlerte,
+        'episode_id': m.episodeId,
+      };
+
+  Mesure _depuisCloud(Map<String, dynamic> d) => Mesure(
+        id: d['id'] as String,
+        date: DateTime.fromMillisecondsSinceEpoch((d['date_ms'] as num).toInt()),
+        tas: (d['tas'] as num).toInt(),
+        tad: (d['tad'] as num).toInt(),
+        pouls: (d['pouls'] as num).toInt(),
+        nbLectures: (d['nb_lectures'] as num?)?.toInt() ?? 1,
+        grade: d['grade'] as String,
+        symptomes: List<String>.from(d['symptomes'] ?? const []),
+        niveauAlerte: (d['niveau_alerte'] as num?)?.toInt() ?? 1,
+        episodeId: d['episode_id'] as String?,
+        syncStatus: 'synced',
+      );
+
+  /// Envoie le profil et les mesures en attente. Renvoie un message court.
+  Future<String> synchroniser({required bool enLigne, Profil? profil}) async {
+    if (!pret) return 'Sauvegarde cloud non configurée';
+    if (!await AuthService.instance.consentementCloud()) return 'Sauvegarde cloud refusée dans le consentement';
+    if (!enLigne) return 'Hors ligne : envoi au retour du réseau';
+    if (_enCours) return 'Synchronisation déjà en cours';
+    _enCours = true;
+    try {
+      final err = await assurerCompte();
+      if (err != null) return err;
+      final uid = _auth.currentUser!.uid;
+      if (profil != null) {
+        await _utilisateur(uid).set({
+          'email': _auth.currentUser!.email,
+          'profil': profil.toJson(),
+          'maj': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+      }
+      final enAttente = await _db.mesuresEnAttente();
+      for (var i = 0; i < enAttente.length; i += 400) {
+        final lot = enAttente.skip(i).take(400).toList();
+        final b = _fs.batch();
+        for (final m in lot) {
+          b.set(_utilisateur(uid).collection('mesures').doc(m.id), _versCloud(m));
+        }
+        await b.commit();
+        await _db.marquerSynchro(lot.map((m) => m.id).toList());
+      }
+      await _db.ecrireReglage('derniere_synchro', DateTime.now().millisecondsSinceEpoch.toString());
+      return enAttente.isEmpty ? 'Tout est à jour' : '${enAttente.length} mesure(s) envoyée(s)';
+    } on FirebaseAuthException catch (e) {
+      return messageErreur(e);
+    } on FirebaseException catch (e) {
+      return 'Erreur cloud (${e.code}). Les mesures restent sur le téléphone.';
+    } finally {
+      _enCours = false;
+    }
+  }
+
+  /// Connexion sur un nouveau téléphone : récupère le profil et les mesures.
+  /// Renvoie (message d'erreur ou null, profil récupéré ou null).
+  Future<(String?, Profil?)> connecterEtRecuperer(String email, String motDePasse) async {
+    if (!pret) return ('Firebase n’est pas encore configuré.', null);
+    try {
+      await _auth.signInWithEmailAndPassword(email: email.trim(), password: motDePasse);
+    } on FirebaseAuthException catch (e) {
+      return (messageErreur(e), null);
+    }
+    final uid = _auth.currentUser!.uid;
+    Profil? profil;
+    try {
+      final doc = await _utilisateur(uid).get();
+      final p = doc.data()?['profil'];
+      if (p is Map) profil = Profil.fromJson(Map<String, dynamic>.from(p));
+      final q = await _utilisateur(uid).collection('mesures').orderBy('date_ms').get();
+      for (final d in q.docs) {
+        await _db.importerMesure(_depuisCloud(d.data()));
+      }
+    } on FirebaseException catch (e) {
+      return ('Connecté, mais récupération impossible (${e.code}).', profil);
+    }
+    return (null, profil);
+  }
+
+  Future<DateTime?> derniereSynchro() async {
+    final s = await _db.lireReglage('derniere_synchro');
+    return s == null ? null : DateTime.fromMillisecondsSinceEpoch(int.parse(s));
+  }
+}
